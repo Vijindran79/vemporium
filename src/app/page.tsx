@@ -8,14 +8,26 @@
  */
 
 import Link from 'next/link';
+import { CatalogGrid } from '@/components/catalog/CatalogGrid';
+import { CATALOG, CATEGORIES } from '@/lib/catalog';
 import { resolveGeo } from '@/lib/geo';
 import { getRate, convert, formatMoney } from '@/lib/fx';
 import { calculateLandedCost } from '@/lib/duties';
 import { paymentMethodsFor } from '@/lib/payments';
-import { CATALOG } from '@/lib/catalog';
 import { CURRENCIES } from '@/lib/currency';
+import { COUNTRY_NAMES } from '@/lib/markets';
 
 export const dynamic = 'force-dynamic';
+
+/** Category navigation split by audience, per the spec. */
+const AUDIENCE: { label: string; detail: string }[] = [
+  { label: 'Women', detail: 'Sarees, lehengas, kurtis' },
+  { label: 'Men', detail: 'Sherwanis, kurtas' },
+  { label: 'Boys', detail: 'Kurta sets' },
+  { label: 'Girls', detail: 'Kurtis, lehengas' },
+];
+
+const CRAFT_TAGS = ['Zari', 'Chanderi', 'Chikankari', 'Block print', 'Kantha', 'Banarasi'];
 
 export default async function HomePage() {
   const geo = await resolveGeo();
@@ -37,8 +49,9 @@ export default async function HomePage() {
         <div className="grid items-center gap-8 lg:grid-cols-2">
           <div>
             <p className="label-xs text-saffron">
-              {geo.country ? `Shipping to ${geo.country}` : 'Shipping worldwide'}
-              {geo.isGuess ? ' · set your country at checkout' : ''}
+              {geo.country
+                ? `Shipping to ${COUNTRY_NAMES[geo.country] ?? geo.country}`
+                : 'Shipping worldwide · set your country at checkout'}
             </p>
             <h1 className="mt-3 font-display text-4xl leading-[1.1] text-maroon sm:text-5xl">
               Indian ethnic wear, <br />
@@ -96,6 +109,45 @@ export default async function HomePage() {
         </div>
       </section>
 
+      {/* Category navigation — audience, then garment type, then craft. */}
+      <section className="mx-auto max-w-6xl px-4 py-10">
+        <h2 className="font-display text-2xl text-maroon">Shop by</h2>
+
+        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {AUDIENCE.map((a) => (
+            <Link key={a.label} href="/catalog" className="card p-4 transition-colors hover:border-maroon/40 hover:bg-gold/5">
+              <p className="font-display text-lg text-maroon">{a.label}</p>
+              <p className="mt-0.5 text-[11px] text-stone-500">{a.detail}</p>
+            </Link>
+          ))}
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-1.5">
+          {CATEGORIES.map((c) => (
+            <Link
+              key={c}
+              href="/catalog"
+              className="rounded-full border border-stone-300 bg-white px-4 py-2 text-sm text-stone-700 transition-colors hover:border-maroon/40 hover:text-maroon"
+            >
+              {c}s
+            </Link>
+          ))}
+        </div>
+
+        <p className="label-xs mt-5">Or by craft</p>
+        <div className="mt-1.5 flex flex-wrap gap-1.5">
+          {CRAFT_TAGS.map((t) => (
+            <Link
+              key={t}
+              href="/catalog"
+              className="rounded-full bg-stone-100 px-3 py-1 text-[11px] text-stone-600 transition-colors hover:bg-maroon hover:text-ivory"
+            >
+              {t}
+            </Link>
+          ))}
+        </div>
+      </section>
+
       {/* Featured */}
       <section id="collection" className="mx-auto max-w-6xl px-4 py-12">
         <div className="flex items-end justify-between">
@@ -103,30 +155,12 @@ export default async function HomePage() {
             <h2 className="font-display text-2xl text-maroon">Featured pieces</h2>
             <p className="mt-1 text-sm text-stone-600">Each one drapes differently on your avatar — try them on.</p>
           </div>
-          <Link href="/fitting-room" className="text-sm text-maroon underline-offset-4 hover:underline">
+          <Link href="/catalog" className="text-sm text-maroon underline-offset-4 hover:underline">
             View all
           </Link>
         </div>
-
-        <div className="mt-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
-          {featured.map((p) => {
-            const local = convert(p.priceUsd, rate, geo.currency);
-            return (
-              <article key={p.id} className="card overflow-hidden">
-                <div className="relative h-40" style={{ backgroundColor: p.colourHex }}>
-                  {p.accentHex && <div className="absolute inset-x-0 bottom-0 h-2.5" style={{ backgroundColor: p.accentHex }} />}
-                </div>
-                <div className="p-3">
-                  <span className="label-xs">{p.categoryLabel}</span>
-                  <h3 className="mt-0.5 text-sm font-medium leading-tight text-stone-800">{p.title}</h3>
-                  <p className="mt-1 text-xs text-stone-500">{p.fabricLabel} · {p.originCity}</p>
-                  <p className="mt-2 text-sm font-semibold text-maroon">
-                    {formatMoney(local, geo.currency, meta.locale)}
-                  </p>
-                </div>
-              </article>
-            );
-          })}
+        <div className="mt-5">
+          <CatalogGrid items={featured} />
         </div>
       </section>
     </main>

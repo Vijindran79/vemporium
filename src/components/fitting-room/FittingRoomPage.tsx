@@ -13,7 +13,7 @@ import { AvatarControls } from './AvatarControls';
 import { GarmentPicker } from './GarmentPicker';
 import { useAvatarStore } from '@/store/avatar-store';
 import { CATALOG, toGarmentSpec, type CatalogItem } from '@/lib/catalog';
-import type { GarmentSpec } from '@/store/avatar-store';
+import type { CameraView, GarmentSpec } from '@/store/avatar-store';
 
 const FittingRoomCanvas = dynamic(() => import('./FittingRoomCanvas'), {
   ssr: false,
@@ -31,6 +31,7 @@ export default function FittingRoomPage() {
   const wearGarment = useAvatarStore((s) => s.wearGarment);
   const setCompareGarment = useAvatarStore((s) => s.setCompareGarment);
   const compareMode = useAvatarStore((s) => s.compareMode);
+  const [view, setView] = useState<CameraView>('front');
 
   const [ready, setReady] = useState(false);
   // Default the shopper into something wearing so the room is never empty.
@@ -81,7 +82,30 @@ export default function FittingRoomPage() {
         {/* Canvas */}
         <div className="order-1 lg:order-2">
           <div className="card relative h-[52vh] min-h-[380px] overflow-hidden lg:h-[calc(100vh-190px)]">
-            <FittingRoomCanvas onSelectGarment={handleGarmentClick} />
+            <FittingRoomCanvas onSelectGarment={handleGarmentClick} view={view} />
+
+            {/* Quick camera presets, per the studio spec. */}
+            <div className="absolute left-3 top-3 flex flex-col gap-1">
+              {([
+                ['front', 'Front'],
+                ['three-quarter', '3/4'],
+                ['side', 'Side'],
+                ['back', 'Back'],
+              ] as [CameraView, string][]).map(([v, label]) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setView(v)}
+                  aria-pressed={view === v}
+                  className={`rounded-full px-2.5 py-1 text-[10px] font-medium transition-colors ${
+                    view === v ? 'bg-maroon text-ivory' : 'bg-white/85 text-stone-600 hover:bg-white'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
             <p className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-white/85 px-3 py-1 text-[11px] text-stone-500 backdrop-blur">
               Drag to rotate · pinch or scroll to zoom
             </p>

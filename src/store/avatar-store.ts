@@ -51,6 +51,10 @@ export const HAIR_COLORS = [
 
 export type DrapingType = 'WRAPPED' | 'RIGID' | 'FLOWING';
 
+/** Quick camera presets. Declared here, not in the canvas, so the (ssr:false)
+ *  canvas module is never type-imported by a page that renders on the server. */
+export type CameraView = 'front' | 'back' | 'side' | 'three-quarter';
+
 export interface GarmentSpec {
   id: string;
   title: string;

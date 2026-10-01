@@ -25,6 +25,8 @@ import { paymentMethodsFor, toMinorUnits } from './payments.ts';
 import { convert, formatMoney } from './fx.ts';
 import { currencyForCountry } from './currency.ts';
 import { useAvatarStore } from '../store/avatar-store.ts';
+import { scoreFit, MINIMUM_CONFIDENCE } from './fit.ts';
+import { cmToIn, inchToCm, kgToLb, lbToKg, toFeetInches, formatLength } from './units.ts';
 
 const sku = (over: Partial<SkuState> = {}): SkuState => ({
   skuId: 'sku-1',
@@ -267,3 +269,78 @@ test('money formats in the right locale and symbol', () => {
   assert.match(formatMoney(142.82, 'GBP'), /142/);
   assert.ok(!formatMoney(189, 'JPY').includes('.'), 'JPY has no decimal point');
 });
+
+// --- fit confidence (PDP widget) ------------------------------------------
+
+test('a body matching its block scores at the very top of the range', () => {
+  // Not exactly 100: height is folded in at quarter weight for hem length, so a
+  // 170cm body in the M block still lands marginally below a 164cm one. The
+  // point of the test is "near-perfect", not "exactly perfect".
+  const r = scoreFit(body({ heightCm: 164, weightKg: 65, waistCm: 69, hipCm: 96, bustCm: 89 }));
+  assert.equal(r.recommended, 'M');
+  assert.equal(r.best.score, 100, 'height at the block midpoint with exact girths scores 100');
+
+  const nearMiss = scoreFit(body({ heightCm: 170, weightKg: 65, waistCm: 69, hipCm: 96, bustCm: 89 }));
+  assert.equal(nearMiss.recommended, 'M');
+  assert.ok(nearMiss.best.score >= 95, `expected a near-perfect score, got ${nearMiss.best.score}`);
+  assert.ok(nearMiss.confident);
+});
+
+test('fit scores never exceed 100 and never go negative', () => {
+  for (const waist of [40, 60, 80, 100, 140, 200]) {
+    const r = scoreFit(body({ waistCm: waist, hipCm: waist + 24, bustCm: waist + 20, heightCm: 170 }));
+    for (const f of r.ranked) {
+      assert.ok(f.score >= 0 && f.score <= 100, `score ${f.score} out of range`);
+    }
+  }
+});
+
+test('an implausible body is NOT reported as a confident match', () => {
+  // Guards the trust failure mode: over-confident bad advice costs returns.
+  const r = scoreFit(body({ heightCm: 200, weightKg: 150, waistCm: 150, hipCm: 165, bustCm: 150 }));
+  if (r.best.score < MINIMUM_CONFIDENCE) {
+    assert.equal(r.confident, false);
+    assert.ok(r.notes.some((n) => /tailor/.test(n)), 'must offer a tailoring escape hatch');
+  }
+});
+
+test('every size is scored, best first', () => {
+  const r = scoreFit(body());
+  assert.equal(r.ranked.length, 6);
+  for (let i = 1; i < r.ranked.length; i++) {
+    assert.ok(r.ranked[i - 1].score >= r.ranked[i].score, 'ranking must be descending');
+  }
+  assert.equal(r.ranked[0].size, r.recommended);
+});
+
+test('fit confidence rises toward the body\'s own block', () => {
+  const exact = scoreFit(body({ heightCm: 170, waistCm: 69, hipCm: 96, bustCm: 89 })).best.score;
+  const off = scoreFit(body({ heightCm: 170, waistCm: 80, hipCm: 107, bustCm: 100 })).best.score;
+  assert.ok(exact > off, 'an on-block body must outscore a drifting one');
+});
+
+test('kids are scored against the child ladder', () => {
+  const r = scoreFit({ gender: 'KID_GIRL', heightCm: 134, weightKg: 28, waistCm: 56, hipCm: 65, bustCm: 60 });
+  assert.equal(r.recommended, 'M');
+  assert.ok(r.confident);
+});
+
+// --- units -----------------------------------------------------------------
+
+test('length conversions round-trip', () => {
+  assert.ok(Math.abs(inchToCm(cmToIn(170)) - 170) < 1e-9);
+  assert.equal(cmToIn(2.54), 1);
+  assert.equal(inchToCm(1), 2.54);
+});
+
+test('weight conversions round-trip', () => {
+  assert.ok(Math.abs(lbToKg(kgToLb(65)) - 65) < 1e-9);
+  assert.equal(Math.round(kgToLb(45.3592)), 100);
+});
+
+test('heights render as feet and inches', () => {
+  assert.deepEqual(toFeetInches(170), { feet: 5, inches: 7 });
+  assert.equal(formatLength(170, 'metric'), '170 cm');
+  assert.equal(formatLength(170, 'imperial'), '5′ 7″');
+});
+

@@ -12,19 +12,25 @@ Built from the PRD v1.0. Phase 1 (MVP) is implemented and running.
 
 | Area | Status |
 | --- | --- |
+| Global landing + geo-banner with manual country/currency/language override | Working — server-rendered, no currency flash |
+| Category navigation by audience, garment type and craft | Working |
+| Catalog with search + facet filters | Working — one field searches type, colour, fabric, craft |
+| Product detail page with craft story and dynamic pricing | Working |
+| Smart size match widget ("Fits 96% best in Size M") | Working — per-size bars, suppresses itself when unsure |
+| Duties / landed-cost estimate on PDP and in cart | Working — de minimis, duty, import VAT |
 | Parametric 3D avatar (women / men / kids) | Working — generated from measurements, not a fixed mesh |
+| Metric/imperial toggle on measurements | Working — internal values stay metric |
+| Camera presets: front / three-quarter / side / back | Working |
 | Garment draping (wrapped / rigid / flowing) | Working — saree, lehenga, kurta, kurti, sherwani, dupatta |
 | 360° rotation, zoom, side-by-side compare | Working |
-| Size recommendation from body parameters | Working — 30 unit tests covering the rules |
-| GeoIP market detection | Working — edge headers → cookie → ipinfo → honest USD fallback |
-| Multi-currency pricing (22 currencies) | Working — live rates, 1h cache, native rounding |
-| Duties / landed-cost estimate at checkout | Working — de minimis, duty, import VAT, shipping |
-| Localised payment routing | Working — KakaoPay, PayPay, iDEAL, Klarna, UPI, Stripe, PayPal |
+| Cart with itemised totals and explicit FX rate | Working |
+| Localised checkout with per-market payment router | Working — delivery → payment → review |
 | Order webhook → decrement stock → auto purchase order | Implemented — needs Postgres to exercise |
 | WhatsApp / email dispatch to suppliers | Implemented — simulated mode without credentials |
-| Vendor portal | Not started (Phase 2) |
-| Checkout UI / cart | Not started (Phase 2) |
+| Vendor restock dashboard | Working — drives the real `evaluateReorder()` |
 | Real `.glb` garment models | Not started — procedural draping stands in |
+| Auth / account / avatar persistence | Not started (Phase 2) |
+| Real payment capture (Stripe etc.) | Not started (Phase 2) |
 
 ---
 
@@ -36,16 +42,21 @@ cp .env.example .env        # then set DATABASE_URL
 npm run dev                 # http://localhost:3000
 ```
 
-The fitting room and the multi-currency engine work **without a database** —
-they read from the bundled catalog. Postgres is only needed for orders,
-inventory and the supplier pipeline.
+**Browsing works with no database at all** — the landing page, catalog, PDP,
+fitting room, cart and currency engine all read from the bundled catalog. Start
+with `npm run dev` and everything renders.
 
-With a database:
+**Placing an order needs Postgres.** `POST /api/orders` refuses to invent a
+confirmation when the database is unreachable, and returns a 503 saying so
+rather than telling the customer their order succeeded when nothing was
+recorded. To exercise the full path:
 
 ```bash
 npm run db:push
 npm run db:seed
 ```
+
+Until then, checkout still works end to end up to the "Place order" button.
 
 ### Verifying it works
 
@@ -74,36 +85,58 @@ vemporium/
 ├── docs/
 │   ├── ARCHITECTURE.md
 │   └── PRD.md
-└── src/
-    ├── app/
-    │   ├── layout.tsx
-    │   ├── page.tsx                    # landing, server-rendered in local currency
-    │   ├── globals.css
-    │   ├── fitting-room/page.tsx
-    │   └── api/
-    │       ├── geo/route.ts            # GeoIP + multi-currency
-    │       └── webhooks/order/route.ts # order.paid -> stock -> PO -> dispatch
-    ├── components/fitting-room/
-    │   ├── FittingRoomPage.tsx        # page shell
-    │   ├── FittingRoomCanvas.tsx      # <Canvas>, lights, turntable, orbit controls
-    │   ├── ParametricAvatar.tsx       # body mesh derived from measurements
-    │   ├── Garment.tsx                # draping shells + trim per garment family
-    │   ├── AvatarControls.tsx         # sliders, swatches, size guidance
-    │   └── GarmentPicker.tsx          # catalog rail
-    ├── lib/
-    │   ├── sizing.ts           # body params -> size recommendation
-    │   ├── currency.ts         # currency table, country->currency/locale maps
-    │   ├── fx.ts               # rate fetching, caching, rounding, formatting
-    │   ├── geo.ts              # market resolution
-    │   ├── duties.ts           # landed cost (duty, VAT, de minimis)
-    │   ├── payments.ts         # per-market payment routing
-    │   ├── inventory.ts        # replenishment rules (pure, tested)
-    │   ├── dispatch.ts         # WhatsApp + email dispatch
-    │   ├── catalog.ts          # sample catalog
-    │   ├── db.ts               # Prisma singleton
-    │   └── business-logic.test.ts
-    ├── store/avatar-store.ts   # Zustand: avatar + garment state
-    └── types/optional-modules.d.ts
+├── src/
+│   ├── app/
+│   │   ├── layout.tsx                 # geo resolution + market provider + chrome
+│   │   ├── page.tsx                   # landing: hero, category nav, featured
+│   │   ├── globals.css
+│   │   ├── catalog/page.tsx           # Screen 2 — category / catalog
+│   │   ├── product/[slug]/page.tsx    # Screen 3 — PDP
+│   │   ├── fitting-room/page.tsx      # Screen 2b — virtual fitting studio
+│   │   ├── cart/page.tsx
+│   │   ├── checkout/page.tsx          # Screen 4 — localised checkout
+│   │   ├── vendor/page.tsx            # Screen 5 — restock dispatch dashboard
+│   │   └── api/
+│   │       ├── geo/route.ts            # GeoIP + multi-currency
+│   │       ├── orders/route.ts         # create PENDING_PAYMENT order
+│   │       └── webhooks/order/route.ts # order.paid -> stock -> PO -> dispatch
+│   ├── components/
+│   │   ├── shell/
+│   │   │   ├── GeoHeader.tsx           # geo-banner + market selector
+│   │   │   ├── SiteHeader.tsx          # nav + cart badge
+│   │   │   └── MoneyProvider.tsx       # reactive local-currency formatting
+│   │   ├── catalog/CatalogGrid.tsx     # search + facets + cards
+│   │   ├── product/ProductPanels.tsx   # size match, size picker, pricing, add-to-cart
+│   │   ├── cart/CartView.tsx
+│   │   ├── checkout/CheckoutView.tsx   # delivery -> payment -> review
+│   │   ├── vendor/VendorDashboard.tsx  # replenishment decision + dispatch payload
+│   │   └── fitting-room/
+│   │       ├── FittingRoomPage.tsx     # page shell + camera presets
+│   │       ├── FittingRoomCanvas.tsx   # <Canvas>, lights, turntable, orbit
+│   │       ├── ParametricAvatar.tsx    # body mesh from measurements
+│   │       ├── Garment.tsx             # drape shells + trim per garment family
+│   │       ├── AvatarControls.tsx      # sliders, swatches, units, size guidance
+│   │       └── GarmentPicker.tsx       # wardrobe rail
+│   ├── lib/
+│   │   ├── sizing.ts           # body params -> size recommendation
+│   │   ├── fit.ts              # fit confidence score (PDP widget)
+│   │   ├── units.ts            # metric/imperial conversion
+│   │   ├── currency.ts         # currency table, country->currency/locale maps
+│   │   ├── markets.ts          # country/language reference data (server-safe)
+│   │   ├── fx.ts               # rate fetching, caching, rounding, formatting
+│   │   ├── geo.ts              # market resolution
+│   │   ├── duties.ts           # landed cost (duty, VAT, de minimis)
+│   │   ├── payments.ts         # per-market payment routing
+│   │   ├── inventory.ts        # replenishment rules (pure, tested)
+│   │   ├── dispatch.ts         # WhatsApp + email dispatch
+│   │   ├── catalog.ts          # sample catalog
+│   │   ├── db.ts               # Prisma singleton
+│   │   └── business-logic.test.ts
+│   ├── store/
+│   │   ├── avatar-store.ts     # Zustand: avatar + garment state
+│   │   ├── cart-store.ts       # Zustand + persist: cart
+│   │   └── market-store.ts     # Zustand + persist: country/currency/units
+│   └── types/optional-modules.d.ts
 ```
 
 ---
@@ -149,6 +182,13 @@ Three rules hold the system together:
 3. **Round like a local.** KRW and JPY have no minor unit and round to 100s;
    USD keeps cents. Zero-decimal currencies are never multiplied by 100 when
    building PSP amounts.
+4. **The server value wins the first paint.** `MoneyProvider` resolves as
+   "manual override if set, else the server-detected market". It deliberately
+   does *not* fall back to the store's persisted default, because that default
+   is `{ currency: 'USD' }` and would briefly show a Korean visitor a dollar
+   price. Reference data lives in `lib/markets.ts`, not in a `'use client'`
+   module — Next turns client-module exports into client references, so plain
+   data imported by a server component silently arrives as `undefined`.
 
 ---
 
@@ -191,11 +231,13 @@ Every integration is optional in development — see `.env.example`.
 
 ## Roadmap
 
-**Phase 2** — cart and checkout UI, auth, avatar persistence, vendor portal,
-real GLB models with a CDN pipeline, Stripe integration, order email.
+**Phase 2** — auth and account, avatar persistence across sessions, real GLB
+models with a CDN pipeline, Stripe capture, order confirmation email, and a
+writable vendor portal (the dashboard is read-only today).
 
 **Phase 3** — live WhatsApp Business API + supplier acknowledgements, regional
-fulfilment, returns flow, i18n (ko, ja, fr, es), PWA and offline avatar.
+fulfilment, returns flow, i18n (ko, ja, fr, es — the locale plumbing is in
+place, the strings are not translated yet), PWA and offline avatar.
 
 ---
 

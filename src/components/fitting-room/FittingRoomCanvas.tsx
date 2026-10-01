@@ -53,6 +53,54 @@ function Turntable({ speed = 0.35 }: { speed?: number }) {
   return null;
 }
 
+export type CameraView = 'front' | 'back' | 'side' | 'three-quarter';
+
+/**
+ * Quick camera presets.
+ *
+ * Rotates the STAGE rather than moving the camera, so the lighting, shadows and
+ * contact shadow stay correct and the orbit target is untouched — the shopper
+ * lands exactly where they asked. The turntable angle is zeroed first so
+ * "Front" always means front, not "front-ish".
+ */
+function CameraPresets({ height, view }: { height: number; view: CameraView }) {
+  const controls = useRef<any>(null);
+
+  useFrame(() => {
+    if (!controls.current) return;
+    // Ease toward the requested angle so the switch does not snap.
+    const current = controls.current.object.rotation.y;
+    const target = ANGLES[view];
+    let delta = target - current;
+    // Shortest path around the circle.
+    while (delta > Math.PI) delta -= Math.PI * 2;
+    while (delta < -Math.PI) delta += Math.PI * 2;
+    controls.current.object.rotation.y = current + delta * 0.12;
+  });
+
+  return (
+    <OrbitControls
+      ref={controls}
+      makeDefault
+      enablePan={false}
+      minDistance={0.9}
+      maxDistance={7}
+      minPolarAngle={Math.PI * 0.18}
+      maxPolarAngle={Math.PI * 0.62}
+      target={[0, height * 0.55, 0]}
+      enableDamping
+      dampingFactor={0.08}
+    />
+  );
+}
+
+const ANGLES: Record<CameraView, number> = {
+  front: 0,
+  'three-quarter': Math.PI * 0.25,
+  side: Math.PI * 0.5,
+  back: Math.PI,
+};
+
 export interface FittingRoomCanvasProps {
   /** Optional explicit garments; defaults to store state. */
   primary?: GarmentSpec | null;
@@ -60,6 +108,8 @@ export interface FittingRoomCanvasProps {
   compareMode?: boolean;
   /** Fired when the shopper clicks the garment mesh in 3D. */
   onSelectGarment?: (garment: GarmentSpec) => void;
+  /** Quick-view preset; omit for free orbit. */
+  view?: CameraView;
   className?: string;
 }
 
@@ -68,6 +118,7 @@ export default function FittingRoomCanvas({
   secondary,
   compareMode,
   onSelectGarment,
+  view = 'front',
   className,
 }: FittingRoomCanvasProps) {
   const body = useAvatarStore((s) => s.body);
@@ -144,17 +195,7 @@ export default function FittingRoomCanvas({
         {/* Studio env map gives the silk its sheen. */}
         <Environment preset="studio" environmentIntensity={0.45} />
 
-        <OrbitControls
-          makeDefault
-          enablePan={false}
-          minDistance={0.9}
-          maxDistance={7}
-          minPolarAngle={Math.PI * 0.18}
-          maxPolarAngle={Math.PI * 0.62}
-          target={[0, camY, 0]}
-          enableDamping
-          dampingFactor={0.08}
-        />
+        <CameraPresets height={metrics.height} view={view} />
       </Canvas>
     </div>
   );

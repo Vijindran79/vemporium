@@ -17,6 +17,8 @@ export interface CatalogItem extends GarmentSpec {
   workTypeLabel: string;
   originCity: string;
   categoryLabel: string;
+  /** Human-readable colourway, e.g. "Deep Maroon / Gold Zari". */
+  colourway: string;
 }
 
 export const CATALOG: CatalogItem[] = [
@@ -38,6 +40,7 @@ export const CATALOG: CatalogItem[] = [
     fabricLabel: 'Banarasi brocade',
     workTypeLabel: 'Zari',
     originCity: 'Varanasi',
+    colourway: 'Deep Maroon with Gold Zari border',
   },
   {
     id: 'p-chanderi-saree',
@@ -57,6 +60,7 @@ export const CATALOG: CatalogItem[] = [
     fabricLabel: 'Chanderi silk-cotton',
     workTypeLabel: 'Plain',
     originCity: 'Chanderi',
+    colourway: 'Antique Gold with Maroon border',
   },
   {
     id: 'p-lehenga',
@@ -75,6 +79,7 @@ export const CATALOG: CatalogItem[] = [
     fabricLabel: 'Georgette',
     workTypeLabel: 'Embroidery',
     originCity: 'Jaipur',
+    colourway: 'Ruby Pink with Gold',
   },
   {
     id: 'p-kurta',
@@ -93,6 +98,7 @@ export const CATALOG: CatalogItem[] = [
     fabricLabel: 'Pure cotton',
     workTypeLabel: 'Chikankari',
     originCity: 'Lucknow',
+    colourway: 'Ivory with Sand accents',
   },
   {
     id: 'p-kurti',
@@ -111,6 +117,7 @@ export const CATALOG: CatalogItem[] = [
     fabricLabel: 'Raw silk',
     workTypeLabel: 'Block print',
     originCity: 'Bagru',
+    colourway: 'Indigo with Cream',
   },
   {
     id: 'p-sherwani',
@@ -129,6 +136,7 @@ export const CATALOG: CatalogItem[] = [
     fabricLabel: 'Silk brocade',
     workTypeLabel: 'Zari',
     originCity: 'Lucknow',
+    colourway: 'Deep Purple with Gold',
   },
   {
     id: 'p-dupatta',
@@ -147,6 +155,7 @@ export const CATALOG: CatalogItem[] = [
     fabricLabel: 'Chiffon',
     workTypeLabel: 'Plain',
     originCity: 'Surat',
+    colourway: 'Teal with Gold',
   },
 ];
 

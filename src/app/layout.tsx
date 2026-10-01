@@ -1,5 +1,8 @@
 import type { Metadata, Viewport } from 'next';
-import Link from 'next/link';
+import { GeoHeader } from '@/components/shell/GeoHeader';
+import { SiteHeader } from '@/components/shell/SiteHeader';
+import { MoneyProvider } from '@/components/shell/MoneyProvider';
+import { resolveGeo } from '@/lib/geo';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -19,27 +22,44 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+/**
+ * The geo-banner needs the visitor's market, so the root layout is dynamic.
+ * It stays dynamic for the whole app because the header renders on every page
+ * — a single geo resolution per request is cheap (edge header or cookie) and
+ * the alternative, a client-side guess, means showing the wrong currency first.
+ */
+export const dynamic = 'force-dynamic';
+
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const geo = await resolveGeo();
+
   return (
-    <html lang="en">
-      <body className="min-h-full">
-        <header className="sticky top-0 z-40 border-b border-stone-200 bg-ivory/85 backdrop-blur">
-          <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
-            <Link href="/" className="font-display text-xl tracking-tight text-maroon">
-              Vemporium
-            </Link>
-            <nav className="flex items-center gap-1 sm:gap-2">
-              <Link href="/fitting-room" className="btn-ghost hidden sm:inline-block">
-                Fitting room
-              </Link>
-              <Link href="/fitting-room" className="btn-primary">
-                Try it on
-              </Link>
-            </nav>
-          </div>
-        </header>
-        {children}
+    <html lang={geo.locale}>
+      <body className="flex min-h-full flex-col">
+        <MoneyProvider
+          initialCountry={geo.country}
+          initialCurrency={geo.currency}
+          initialLocale={geo.locale}
+          initialIsGuess={geo.isGuess}
+        >
+          <GeoHeader />
+          <SiteHeader />
+          <div className="flex-1">{children}</div>
+          <footer className="mt-16 border-t border-stone-200 bg-white">
+            <div className="mx-auto flex max-w-6xl flex-col gap-2 px-4 py-8 text-xs text-stone-500 sm:flex-row sm:items-center sm:justify-between">
+              <p>
+                © {new Date().getFullYear()} Vemporium. Every piece sourced from a named Indian workshop.
+              </p>
+              <nav className="flex gap-4">
+                <a href="/catalog" className="hover:text-maroon">Shop</a>
+                <a href="/fitting-room" className="hover:text-maroon">Fitting room</a>
+                <a href="/vendor" className="hover:text-maroon">Operations demo</a>
+              </nav>
+            </div>
+          </footer>
+        </MoneyProvider>
       </body>
     </html>
   );
 }
+

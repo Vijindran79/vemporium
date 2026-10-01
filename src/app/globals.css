@@ -1,0 +1,31 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  @apply bg-ivory text-stone-800 antialiased;
+}
+
+@layer components {
+  .btn-primary {
+    @apply rounded-full bg-maroon px-5 py-2.5 text-sm font-medium text-ivory transition-colors hover:bg-maroon/90 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-ghost {
+    @apply rounded-full border border-stone-300 bg-white px-4 py-2 text-sm font-medium text-stone-700 transition-colors hover:border-maroon/40;
+  }
+  .card {
+    @apply rounded-xl border border-stone-200 bg-white;
+  }
+  .label-xs {
+    @apply text-[11px] font-medium uppercase tracking-wide text-stone-500;
+  }
+}

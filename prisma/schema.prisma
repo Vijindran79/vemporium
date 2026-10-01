@@ -1,0 +1,344 @@
+// Vemporium — data model
+// Money is ALWAYS stored in USD base (Decimal). Local currency is a display
+// concern resolved at read time by the geo/currency engine. See src/lib/currency.ts.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Catalog
+// ---------------------------------------------------------------------------
+
+enum Category {
+  KURTA
+  KURTI
+  SAREE
+  LEHENGA
+  SHERWANI
+  DUPATTA
+  SALWAR
+}
+
+enum Fabric {
+  SILK
+  CHANDERI
+  COTTON
+  LINEN
+  GEORGETTE
+  CHIFFON
+  VELVET
+  BANARASI_BROCATTE
+  RAW_SILK
+}
+
+enum Weave {
+  HANDLOOM
+  POWERLOOM
+  JACQUARD
+  KHADI
+  TUSSAR
+}
+
+enum WorkType {
+  ZARI
+  ZARI_DOI
+  EMBROIDERY
+  CHIKANKARI
+  PHULKARI
+  KASUTI
+  BLOCK_PRINT
+  AJRAKH
+  TAPA
+  PLAIN
+}
+
+enum DrapingType {
+  WRAPPED // saree, dupatta — falls from the waist, pleated front
+  RIGID // sherwani, kurta — structured, fixed silhouette
+  FLOWING // lehenga, sharara — wide flare, high volume
+}
+
+model Product {
+  id            String   @id @default(uuid()) @db.Uuid
+  slug          String   @unique
+  title         String
+  description   String
+  basePriceUsd  Decimal  @db.Decimal(10, 2)
+  compareAtUsd  Decimal? @db.Decimal(10, 2)
+  currency      String   @default("USD")
+
+  category      Category
+  fabric        Fabric
+  weave         Weave
+  workType      WorkType
+  drapingType   DrapingType
+  colourway     String // human readable, e.g. "Deep Maroon / Gold Zari"
+  tags          String[]
+
+  // 3D assets. A procedural fallback mesh ships in /public/models/procedural
+  // so the fitting room works before any GLB is authored.
+  modelAssetUrl  String?
+  modelSourceUrl String?
+  textureSetUrl  String?
+  drapingProfile Json? // per-garment drape tuning (pleat count, flare, hem drop)
+
+  careInstructions String?
+  originCity       String? // e.g. "Varanasi" — surfaced for trust/traceability
+
+  variants    ProductVariant[]
+  orderItems  OrderItem[]
+  isPublished Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([category, isPublished])
+  @@index([fabric])
+}
+
+model ProductVariant {
+  id        String @id @default(uuid()) @db.Uuid
+  productId String @db.Uuid
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  sizeLabel   String // XS S M L XL XXL or "Custom"
+  sizeCode    Int // ordinal, used for size recommendation ranking
+  bustCm      Float?
+  waistCm     Float?
+  hipCm       Float?
+  lengthCm    Float?
+  shoulderCm  Float?
+  chestCm     Float? // menswear
+
+  colourHex  String? // per-variant colour, drives the 3D material
+  stockSkuId String? @db.Uuid
+  stock      Inventory?
+
+  priceOverrideUsd Decimal? @db.Decimal(10, 2)
+
+  createdAt DateTime @default(now())
+
+  @@unique([productId, sizeLabel, colourHex])
+  @@index([productId, sizeCode])
+}
+
+// ---------------------------------------------------------------------------
+// Avatars
+// ---------------------------------------------------------------------------
+
+enum Gender {
+  MALE
+  FEMALE
+  KID_BOY
+  KID_GIRL
+}
+
+// NOTE: body measurements are sensitive personal data (GDPR Art.9).
+// This model is intentionally self-hosted; never sync it to third-party
+// analytics. Export/anonymisation lives in src/lib/privacy.ts.
+model AvatarProfile {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  label        String  @default("My avatar")
+  gender       Gender
+  heightCm     Float
+  weightKg     Float
+  bustCm       Float? // women + kids
+  chestCm      Float? // men
+  waistCm      Float
+  hipCm        Float
+  skinToneHex  String
+  hairStyleId  String?
+  hairColorHex String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model User {
+  id          String   @id @default(uuid()) @db.Uuid
+  email       String   @unique
+  name        String?
+  countryCode String? // ISO 3166-1 alpha-2, drives the default currency
+  locale      String   @default("en")
+  createdAt   DateTime @default(now())
+
+  avatars AvatarProfile[]
+  orders  Order[]
+}
+
+// ---------------------------------------------------------------------------
+// Supply chain
+// ---------------------------------------------------------------------------
+
+enum SupplierStatus {
+  ACTIVE
+  PAUSED
+  OFFBOARDED
+}
+
+model Supplier {
+  id           String @id @default(uuid()) @db.Uuid
+  name         String
+  city         String
+  state        String
+  contactName  String?
+  whatsappE164 String // Twilio requires E.164, e.g. +919876543210
+  email        String?
+  status       SupplierStatus @default(ACTIVE)
+  leadTimeDays Int @default(21)
+
+  skus   Inventory[]
+  orders PurchaseOrder[]
+
+  createdAt DateTime @default(now())
+}
+
+enum StockStatus {
+  IN_STOCK
+  LOW
+  OUT_OF_STOCK
+  IN_PRODUCTION
+  DISPATCHED
+}
+
+model Inventory {
+  skuId            String @id @default(uuid()) @db.Uuid
+  productVariantId String @unique @db.Uuid
+  productVariant   ProductVariant @relation(fields: [productVariantId], references: [id], onDelete: Cascade)
+
+  stockLevel       Int
+  reorderThreshold Int @default(10)
+  reorderQuantity  Int @default(50)
+  status           StockStatus @default(IN_STOCK)
+
+  // Split across channels; an in-store sale decrements the same row.
+  reservedOnline Int @default(0)
+  reservedRetail Int @default(0)
+
+  supplierId String? @db.Uuid
+  supplier   Supplier? @relation(fields: [supplierId], references: [id])
+
+  purchaseOrders PurchaseOrderLine[]
+  updatedAt      DateTime @updatedAt
+
+  @@index([status])
+  @@index([supplierId])
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  SENT
+  ACKNOWLEDGED
+  IN_PRODUCTION
+  DISPATCHED
+  RECEIVED
+  CANCELLED
+}
+
+model PurchaseOrder {
+  id        String @id @default(uuid()) @db.Uuid
+  reference String @unique // e.g. "PO-2026-0001"
+  supplierId String @db.Uuid
+  supplier  Supplier @relation(fields: [supplierId], references: [id])
+
+  status  PurchaseOrderStatus @default(DRAFT)
+  trigger String // "THRESHOLD_BREACH" | "SELL_OUT" | "MANUAL"
+  units   Int
+  fabricSpec String?
+  deliveryDeadline DateTime?
+
+  dispatchedVia String[] // ["whatsapp", "email"]
+  sentAt      DateTime?
+  acknowledgedAt DateTime?
+
+  lines    PurchaseOrderLine[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([supplierId])
+}
+
+model PurchaseOrderLine {
+  id              String @id @default(uuid()) @db.Uuid
+  purchaseOrderId String @db.Uuid
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  skuId           String @db.Uuid
+  inventory       Inventory @relation(fields: [skuId], references: [skuId])
+  quantity        Int
+  unitCostUsd     Decimal? @db.Decimal(10, 2)
+}
+
+// ---------------------------------------------------------------------------
+// Commerce
+// ---------------------------------------------------------------------------
+
+enum OrderStatus {
+  PENDING_PAYMENT
+  PAID
+  FULFILLING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}
+
+model Order {
+  id        String  @id @default(uuid()) @db.Uuid
+  reference String  @unique
+  userId    String? @db.Uuid
+  user      User?   @relation(fields: [userId], references: [id])
+
+  status             OrderStatus @default(PENDING_PAYMENT)
+  currency           String // local currency actually charged
+  fxRateAtOrder      Decimal @db.Decimal(12, 6)
+  subtotalLocal      Decimal @db.Decimal(12, 2)
+  dutiesLocal        Decimal @default(0) @db.Decimal(12, 2)
+  taxLocal           Decimal @default(0) @db.Decimal(12, 2)
+  shippingLocal      Decimal @default(0) @db.Decimal(12, 2)
+  totalLocal         Decimal @db.Decimal(12, 2)
+  destinationCountry String // ISO-2, drives the duty band
+  paymentProvider    String? // stripe | kakaopay | klarna | paypay | paypal
+  paymentRef         String?
+
+  items     OrderItem[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model OrderItem {
+  id             String  @id @default(uuid()) @db.Uuid
+  orderId        String  @db.Uuid
+  order          Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId      String  @db.Uuid
+  product        Product @relation(fields: [productId], references: [id])
+  variantLabel   String
+  quantity       Int
+  unitPriceLocal Decimal @db.Decimal(12, 2)
+  lineTotalLocal Decimal @db.Decimal(12, 2)
+}
+
+// Idempotency ledger for inbound provider webhooks. Keeping the raw payload
+// makes disputes and reconciliation possible later.
+model WebhookEvent {
+  id              String   @id @default(uuid()) @db.Uuid
+  providerEventId String   @unique
+  type            String
+  payload         Json
+  processedAt     DateTime @default(now())
+
+  @@index([type])
+}

@@ -25,6 +25,7 @@ import { paymentMethodsFor, toMinorUnits } from './payments.ts';
 import { convert, formatMoney } from './fx.ts';
 import { currencyForCountry } from './currency.ts';
 import { useAvatarStore } from '../store/avatar-store.ts';
+import { computeBoneScales, roleForBone, RIG_REST } from './rig.ts';
 import { scoreFit, MINIMUM_CONFIDENCE } from './fit.ts';
 import { cmToIn, inchToCm, kgToLb, lbToKg, toFeetInches, formatLength } from './units.ts';
 
@@ -183,6 +184,89 @@ test('every one-tap size preset recommends the size it is named after', () => {
     }
   }
   useAvatarStore.getState().reset();
+});
+
+// --- GLB rig scaling (AvatarAsset) ----------------------------------------
+// This is the maths that replaces "scale the whole mesh", so it is pinned by
+// tests rather than reviewed by eye.
+
+test('a body matching the rig rest pose produces no scaling at all', () => {
+  const s = computeBoneScales({ gender: 'FEMALE', heightCm: RIG_REST.heightCm, weightKg: 62, waistCm: RIG_REST.waistCm, hipCm: RIG_REST.hipCm, bustCm: RIG_REST.girthCm });
+  for (const role of ['hips', 'spine', 'chest', 'shoulder', 'arm', 'thigh'] as const) {
+    for (const axis of s[role]) {
+      assert.ok(Math.abs(axis - 1) < 1e-9, `${role} axis should be 1.0, got ${axis}`);
+    }
+  }
+});
+
+test('bone names resolve to roles, and unknown bones are ignored', () => {
+  assert.equal(roleForBone('Hips'), 'hips');
+  assert.equal(roleForBone('mixamorig:Spine'), 'spine');
+  assert.equal(roleForBone('UpperArm_L'), 'arm');
+  assert.equal(roleForBone('thigh.R'), 'thigh');
+  // A rig with extra bones must not break: unrecognised names simply skip.
+  assert.equal(roleForBone('index_finger_01_L'), null);
+});
+
+test('a wider bust scales the chest more in depth than in width', () => {
+  // A real ribcage deepens as it widens. Uniform X/Z scaling is what makes
+  // parametric avatars look like balloons.
+  const wide = computeBoneScales({ gender: 'FEMALE', heightCm: 170, weightKg: 80, waistCm: 70, hipCm: 95, bustCm: 120 });
+  const [x, , z] = wide.chest;
+  assert.ok(x > 1, 'chest widens');
+  assert.ok(z > x, 'chest must deepen more than it widens');
+});
+
+test('a wider hip scales the hips bone but barely touches the spine', () => {
+  const s = computeBoneScales({ gender: 'FEMALE', heightCm: 170, weightKg: 80, waistCm: 70, hipCm: 120, bustCm: 90 });
+  assert.ok(s.hips[0] > 1, 'hips widen');
+  assert.ok(s.hips[2] > s.hips[0], 'hips deepen more than they widen');
+  assert.ok(Math.abs(s.spine[0] - 1) < 0.01, 'a hip change must not inflate the waist');
+});
+
+test('a taller body scales limb length without widening the torso', () => {
+  // Height and girth are independent inputs. Hold girth at the rig's rest value
+  // so this test measures HEIGHT's effect alone — otherwise it also measures
+  // whatever the chosen girth does.
+  const rest = RIG_REST.girthCm;
+  const tall = computeBoneScales({ gender: 'MALE', heightCm: 190, weightKg: 70, waistCm: 70, hipCm: 95, chestCm: rest });
+  assert.ok(tall.arm[1] > 1, 'arms lengthen');
+  assert.ok(tall.thigh[1] > 1, 'legs lengthen');
+  // Width and depth are girth-driven, so height alone must not change them.
+  assert.ok(Math.abs(tall.chest[0] - 1) < 1e-9, `height must not widen the chest, got ${tall.chest[0]}`);
+  assert.ok(Math.abs(tall.chest[2] - 1) < 1e-9, 'height must not deepen the chest');
+});
+
+test('menswear uses chest, womenswear uses bust', () => {
+  // A regression here silently swaps the measurement on every mens garment.
+  const male = computeBoneScales({ gender: 'MALE', heightCm: 175, weightKg: 80, waistCm: 80, hipCm: 100, bustCm: 80, chestCm: 110 });
+  const female = computeBoneScales({ gender: 'FEMALE', heightCm: 175, weightKg: 80, waistCm: 80, hipCm: 100, bustCm: 110 });
+  assert.equal(male.chest[0], female.chest[0], 'a 110cm chest and a 110cm bust should scale identically');
+});
+
+test('a missing measurement never produces NaN or Infinity', () => {
+  const s = computeBoneScales({ gender: 'MALE', heightCm: 175, weightKg: 80, waistCm: 80, hipCm: 100 });
+  for (const role of ['hips', 'spine', 'chest', 'shoulder', 'arm', 'thigh'] as const) {
+    for (const axis of s[role]) {
+      assert.ok(Number.isFinite(axis), `${role} produced ${axis}`);
+    }
+  }
+});
+
+test('every role returns exactly three finite axes', () => {
+  const s = computeBoneScales(body());
+  for (const [role, axes] of Object.entries(s)) {
+    assert.equal(axes.length, 3, `${role} should have 3 axes`);
+    assert.ok(axes.every((a) => Number.isFinite(a) && a > 0), `${role} has an invalid axis`);
+  }
+});
+
+test('bone scales are always positive, never inverted', () => {
+  // A negative scale would mirror the mesh inside-out and render back-faces.
+  const s = computeBoneScales({ gender: 'KID_GIRL', heightCm: 105, weightKg: 17, waistCm: 51, hipCm: 57, bustCm: 53 });
+  for (const axes of Object.values(s)) {
+    for (const axis of axes) assert.ok(axis > 0, `inverted axis ${axis}`);
+  }
 });
 
 // --- duties ----------------------------------------------------------------

@@ -28,6 +28,7 @@ Built from the PRD v1.0. Phase 1 (MVP) is implemented and running.
 | Order webhook → decrement stock → auto purchase order | Implemented — needs Postgres to exercise |
 | WhatsApp / email dispatch to suppliers | Implemented — simulated mode without credentials |
 | Vendor restock dashboard | Working — drives the real `evaluateReorder()` |
+| Real `.glb` avatar models | Supported — `AvatarAsset` loads GLB rigs, falls back to procedural |
 | Real `.glb` garment models | Not started — procedural draping stands in |
 | Auth / account / avatar persistence | Not started (Phase 2) |
 | Real payment capture (Stripe etc.) | Not started (Phase 2) |
@@ -114,12 +115,14 @@ vemporium/
 │   │       ├── FittingRoomPage.tsx     # page shell + camera presets
 │   │       ├── FittingRoomCanvas.tsx   # <Canvas>, lights, turntable, orbit
 │   │       ├── ParametricAvatar.tsx    # body mesh from measurements
+    |   |       |-- AvatarAsset.tsx        # GLB loader + procedural fallback
 │   │       ├── Garment.tsx             # drape shells + trim per garment family
 │   │       ├── AvatarControls.tsx      # sliders, swatches, units, size guidance
 │   │       └── GarmentPicker.tsx       # wardrobe rail
 │   ├── lib/
 │   │   ├── sizing.ts           # body params -> size recommendation
 │   │   ├── fit.ts              # fit confidence score (PDP widget)
+    |   |   |-- rig.ts              # GLB bone scaling (pure, tested)
 │   │   ├── units.ts            # metric/imperial conversion
 │   │   ├── currency.ts         # currency table, country->currency/locale maps
 │   │   ├── markets.ts          # country/language reference data (server-safe)
@@ -163,9 +166,21 @@ Garment families map to the PRD's draping types:
 ### Swapping in real 3D models
 
 `ParametricAvatar` and `GarmentMesh` take `BodyParams` and `GarmentSpec`.
-Replace the procedural geometry with a loaded `.glb` and feed the same inputs
-into the rig's morph targets — no caller changes. `Product.modelAssetUrl` and
-`Product.drapingProfile` are already in the schema for this.
+
+`AvatarAsset` already implements the GLB path: pass `modelUrl` to
+`FittingRoomCanvas` and a `.glb` rig is loaded, cloned and driven by the same
+measurements. It **scales bones rather than the mesh** — a uniform
+`scale={[waist, 1, hips]}` stretches the head and arms with the torso and
+renders anyone with different bust and hip as a barrel. Bone scaling is
+normalised against the rig's rest pose (`src/lib/rig.ts`, with its own tests).
+
+The app degrades safely at every step: no URL, a 404, or a rig with no
+recognisable bones all fall back to the procedural body. Artist contract, rest
+measurements and export settings are in `docs/GLB-PIPELINE.md`.
+
+Garment meshes overlay the procedural drape shell rather than replacing it, so
+hems stay correctly placed against a changing body. `Product.modelAssetUrl`
+and `Product.drapingProfile` are already in the schema.
 
 ---
 

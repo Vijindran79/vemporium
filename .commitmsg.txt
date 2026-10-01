@@ -1,0 +1,28 @@
+Add GLB avatar rigs with bone-driven parametric scaling
+
+The supplied snippet used useGLTF with scale={[waist, 1, hips]} on the root.
+That stretches the head, neck and arms with the torso and renders anyone whose
+bust and hip differ as a barrel, and it 404s because base_avatar.glb does not
+exist. This implements the same intent correctly.
+
+- lib/rig.ts holds the scaling maths as a pure function, normalised against the
+  rig rest pose, so it is unit-testable without WebGL or a JSX runtime
+- Bones are scaled, not meshes: children inherit the transform and the skeleton
+  stays connected. Each region responds to the measurement that actually drives
+  it, and depth tracks girth more than width
+- AvatarAsset loads a .glb, clones it (so compare mode never shares transforms),
+  retints every material, and applies scales
+- Degrades at every step: no URL, a 404, or a rig with no recognised bones all
+  fall back to the procedural body via an error boundary
+- docs/GLB-PIPELINE.md is the artist contract: rest pose, bone names, Draco /
+  KTX2 export settings, size budgets
+
+Two bugs the new tests caught before a customer could:
+- Shoulders never returned to 1.0 at the rest pose, so every avatar started
+  slightly shrugged. A bare constant multiplier deforms a rest pose; it does
+  not scale one
+- Menswear and womenswear drifted apart, because rest chest was 96cm and rest
+  bust 90cm. A rig is one mesh with one rest pose, so there is now a single
+  rest girth
+
+Verification: 48 unit tests passing (was 39), tsc clean, next build clean.

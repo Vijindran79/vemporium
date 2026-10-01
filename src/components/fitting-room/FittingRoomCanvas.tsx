@@ -17,7 +17,8 @@ import { ContactShadows, Environment, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import type { Group } from 'three';
 
-import { ParametricAvatar, deriveMetrics } from './ParametricAvatar';
+import { AvatarAsset } from './AvatarAsset';
+import { deriveMetrics } from './ParametricAvatar';
 import { GarmentMesh } from './Garment';
 import { useAvatarStore } from '@/store/avatar-store';
 import type { GarmentSpec } from '@/store/avatar-store';
@@ -110,6 +111,11 @@ export interface FittingRoomCanvasProps {
   onSelectGarment?: (garment: GarmentSpec) => void;
   /** Quick-view preset; omit for free orbit. */
   view?: CameraView;
+  /**
+   * GLB avatar URL. Omit to use the procedural body. A bad URL is not fatal —
+   * AvatarAsset falls back rather than blanking the viewport.
+   */
+  modelUrl?: string | null;
   className?: string;
 }
 
@@ -119,6 +125,7 @@ export default function FittingRoomCanvas({
   compareMode,
   onSelectGarment,
   view = 'front',
+  modelUrl,
   className,
 }: FittingRoomCanvasProps) {
   const body = useAvatarStore((s) => s.body);
@@ -172,7 +179,13 @@ export default function FittingRoomCanvas({
         <hemisphereLight args={['#ffffff', '#c9b8a6', 0.5]} />
 
         <group>
-          <ParametricAvatar body={body} skinToneHex={skinToneHex} hairStyleId={hairStyleId} hairColorHex={hairColorHex} />
+          <AvatarAsset
+            body={body}
+            skinToneHex={skinToneHex}
+            hairStyleId={hairStyleId}
+            hairColorHex={hairColorHex}
+            modelUrl={modelUrl ?? null}
+          />
           {worn && (
             <GarmentMesh
               metrics={metrics}
@@ -184,7 +197,13 @@ export default function FittingRoomCanvas({
 
         {comparing && compareItem && (
           <group position={[metrics.height * 0.55, 0, 0]}>
-            <ParametricAvatar body={body} skinToneHex={skinToneHex} hairStyleId={hairStyleId} hairColorHex={hairColorHex} />
+            <AvatarAsset
+              body={body}
+              skinToneHex={skinToneHex}
+              hairStyleId={hairStyleId}
+              hairColorHex={hairColorHex}
+              modelUrl={modelUrl ?? null}
+            />
             <GarmentMesh metrics={metrics} garment={compareItem} comparison />
           </group>
         )}

@@ -1,0 +1,60 @@
+
+> vemporium@0.1.0 test
+> tsx --test src/lib/business-logic.test.ts
+
+Ô£ö deriveStatus honours the threshold boundary (1.963ms)
+Ô£ö healthy stock does not reorder (0.3491ms)
+Ô£ö crossing the threshold triggers a replenishment order (0.2196ms)
+Ô£ö sell-out triggers an immediate order (0.2743ms)
+Ô£ö an in-flight purchase order suppresses a duplicate dispatch (0.3075ms)
+Ô£ö a manual request overrides the in-flight guard but still needs a supplier (0.2544ms)
+Ô£ö applyMovement decrements and clamps at zero (0.3718ms)
+Ô£ö applyMovement reports the threshold crossing exactly once (0.2947ms)
+Ô£ö goods receipt increases stock and clears LOW (0.3154ms)
+Ô£ö purchase order references are unique per year (2.0598ms)
+Ô£ö a standard M body recommends M (0.8485ms)
+Ô£ö size recommendation increases monotonically with body size (0.6466ms)
+Ô£ö out-of-range measurements fall back to Custom (0.2772ms)
+Ô£ö recommendation is ordered and every label is ranked (0.2304ms)
+Ô£ö gender helpers classify age groups correctly (0.197ms)
+Ô£ö kids use the child block (0.2824ms)
+Ô£ö a default kid body is NOT flagged as Custom (0.266ms)
+Ô£ö every one-tap size preset recommends the size it is named after (2.985ms)
+Ô£ö a body matching the rig rest pose produces no scaling at all (0.366ms)
+Ô£ö bone names resolve to roles, and unknown bones are ignored (0.4358ms)
+Ô£ö a wider bust scales the chest more in depth than in width (0.1522ms)
+Ô£ö a wider hip scales the hips bone but barely touches the spine (0.142ms)
+Ô£ö a taller body scales limb length without widening the torso (0.1446ms)
+Ô£ö menswear uses chest, womenswear uses bust (0.1493ms)
+Ô£ö a missing measurement never produces NaN or Infinity (0.2142ms)
+Ô£ö every role returns exactly three finite axes (0.1963ms)
+Ô£ö bone scales are always positive, never inverted (0.1681ms)
+Ô£ö EU destinations share one duty band (0.1586ms)
+Ô£ö domestic Indian orders are exempt from duty and only carry GST (0.1972ms)
+Ô£ö duties are waived under the de minimis threshold (0.1359ms)
+Ô£ö duties apply above the threshold and tax is charged on goods + duty (0.1488ms)
+Ô£ö an unknown country falls back rather than throwing (0.1158ms)
+Ô£ö local wallets are offered first in their home markets (0.1679ms)
+Ô£ö EU countries route to the iDEAL/Klarna config (1.1692ms)
+Ô£ö an unknown market still gets card and PayPal (0.1787ms)
+Ô£ö zero-decimal currencies are not multiplied by 100 (0.1713ms)
+Ô£ö country maps to the expected default currency (0.1672ms)
+Ô£ö conversion rounds to native endings (0.1708ms)
+Ô£ö money formats in the right locale and symbol (23.5807ms)
+Ô£ö a body matching its block scores at the very top of the range (0.6796ms)
+Ô£ö fit scores never exceed 100 and never go negative (0.3486ms)
+Ô£ö an implausible body is NOT reported as a confident match (0.211ms)
+Ô£ö every size is scored, best first (0.2018ms)
+Ô£ö fit confidence rises toward the body's own block (0.1957ms)
+Ô£ö kids are scored against the child ladder (0.1489ms)
+Ô£ö length conversions round-trip (0.2581ms)
+Ô£ö weight conversions round-trip (0.2162ms)
+Ô£ö heights render as feet and inches (0.3852ms)
+Ôä╣ tests 48
+Ôä╣ suites 0
+Ôä╣ pass 48
+Ôä╣ fail 0
+Ôä╣ cancelled 0
+Ôä╣ skipped 0
+Ôä╣ todo 0
+Ôä╣ duration_ms 532.5052

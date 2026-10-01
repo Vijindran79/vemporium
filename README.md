@@ -28,9 +28,10 @@ Built from the PRD v1.0. Phase 1 (MVP) is implemented and running.
 | Order webhook → decrement stock → auto purchase order | Implemented — needs Postgres to exercise |
 | WhatsApp / email dispatch to suppliers | Implemented — simulated mode without credentials |
 | Vendor restock dashboard | Working — drives the real `evaluateReorder()` |
+| Auth (email + password, DB sessions) | Working — bcrypt, 8h sessions, revocable |
+| GDPR export / erase (Art. 15/17/20) | Working — hard delete, orders retained anonymised |
 | Real `.glb` avatar models | Supported — `AvatarAsset` loads GLB rigs, falls back to procedural |
 | Real `.glb` garment models | Not started — procedural draping stands in |
-| Auth / account / avatar persistence | Not started (Phase 2) |
 | Real payment capture (Stripe etc.) | Not started (Phase 2) |
 
 ---
@@ -207,7 +208,56 @@ Three rules hold the system together:
 
 ---
 
+## Accounts, avatars and GDPR
+
+Body measurements are **special-category personal data** (GDPR Art. 9), so the
+account layer is built around that rather than treating it as a convenience
+profile.
+
+**Auth.** Credentials provider with bcrypt (cost 12). Two decisions worth
+knowing:
+
+- **Database sessions, not JWTs.** A stateless token cannot be revoked. Erasure
+  must sign a shopper out immediately, not whenever a token happens to expire.
+- **Sign-in failure is timing-indistinguishable.** A missing user still runs a
+  bcrypt comparison against a dummy hash, so "no such account" and "wrong
+  password" take the same time. Without it, response latency is a free
+  account-enumeration oracle.
+
+**Avatar persistence.** `GET/POST/DELETE /api/avatars`. Every handler resolves
+the user from the **session**, never the request body — accepting a `userId`
+from the client would make each route an IDOR over Art. 9 data. Measurements
+are range-checked and clamped on the way in.
+
+**Data rights.** `GET /api/account` exports everything (Art. 15/20);
+`DELETE /api/account` erases (Art. 17). Erasure is a **hard delete** — a
+soft-deleted row is still personal data under GDPR. Sales records are retained
+because tax law requires it, but are re-parented to a tombstone account first,
+so the retained record is no longer personal data. That trade-off is stated to
+the customer in `RETENTION_NOTICE` rather than left implicit.
+
+The delete endpoint requires an explicit `{"confirm":"DELETE"}` body. A stray
+double-click should not be enough to destroy someone's saved avatars.
+
+---
+
 ## Automated supply chain
+
+Two distinct supplier messages, because they are genuinely different events:
+
+| Message | Trigger | Says |
+| --- | --- | --- |
+| **Order alert** | Every paid order | "Prepare these N units for export" |
+| **Reorder PO** | Stock below threshold | "Make 30 more units" |
+
+Conflating them is how you end up telling a workshop to *make* 30 units for an
+order for 1. Order alerts are also **grouped by supplier**, so a karigah who
+made three items gets one message, not three — three messages is three
+interruptions, and the replies no longer map to lines.
+
+Both use a numeric reply protocol (`1` = accepted, `2` = out of fabric) because
+a free-text "ok thanks" is not machine-readable, and a workshop that is out of
+fabric must be able to say so in one tap.
 
 `POST /api/webhooks/order` on a successful payment:
 
@@ -235,6 +285,7 @@ Every integration is optional in development — see `.env.example`.
 | Variable | Purpose | Without it |
 | --- | --- | --- |
 | `DATABASE_URL` | Postgres | Orders/inventory unavailable; catalog + fitting room work |
+| `AUTH_SECRET` | Signs session cookies | Falls back to a **published dev secret** — never in production |
 | `REDIS_URL` | Rate + geo cache | Falls back to an in-process map |
 | `IPINFO_TOKEN` | Country lookup | Uses edge headers; otherwise honest USD default |
 | `FX_API_URL` | Mid-market rates | Bundled fallback table, `stale: true` |

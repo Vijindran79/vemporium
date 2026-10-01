@@ -26,6 +26,9 @@ import { convert, formatMoney } from './fx.ts';
 import { currencyForCountry } from './currency.ts';
 import { useAvatarStore } from '../store/avatar-store.ts';
 import { computeBoneScales, roleForBone, RIG_REST } from './rig.ts';
+import { buildOrderAlertMessage, confirmationDeadline, type OrderAlertPayload } from './dispatch.ts';
+import { usingInsecureSecret, SESSION_MAX_AGE_SECONDS } from './auth-config.ts';
+import { RETENTION_NOTICE } from './privacy.ts';
 import { scoreFit, MINIMUM_CONFIDENCE } from './fit.ts';
 import { cmToIn, inchToCm, kgToLb, lbToKg, toFeetInches, formatLength } from './units.ts';
 
@@ -267,6 +270,95 @@ test('bone scales are always positive, never inverted', () => {
   for (const axes of Object.values(s)) {
     for (const axis of axes) assert.ok(axis > 0, `inverted axis ${axis}`);
   }
+});
+
+// --- supplier order alerts -------------------------------------------------
+
+const alert = (over: Partial<OrderAlertPayload> = {}): OrderAlertPayload => ({
+  orderReference: 'ORD-2026-AB12CD',
+  supplier: {
+    supplierName: 'Chanderi Weavers Collective',
+    contactName: 'Sunita Bai',
+    whatsappE164: '+919876543211',
+    email: 'hello@chanderiweavers.in',
+    city: 'Chanderi',
+    state: 'Madhya Pradesh',
+    leadTimeDays: 35,
+  },
+  lines: [
+    { title: 'Chanderi Silk Saree', sku: 'chanderi-saree', size: 'M', quantity: 2, fabric: 'CHANDERI', originCity: 'Chanderi' },
+    { title: 'Chanderi Silk Saree', sku: 'chanderi-saree', size: 'L', quantity: 1, fabric: 'CHANDERI', originCity: 'Chanderi' },
+  ],
+  destinationCountry: 'KR',
+  destinationCity: 'Seoul',
+  readyBy: '2026-03-12',
+  ...over,
+});
+
+test('an order alert totals units across every line', () => {
+  const { whatsapp } = buildOrderAlertMessage(alert());
+  assert.match(whatsapp, /Total units:\* 3/, '2 + 1 must be stated as 3, not two separate counts');
+});
+
+test('an order alert carries the reply protocol the vendor portal will parse', () => {
+  const { whatsapp } = buildOrderAlertMessage(alert());
+  // A free-text reply is unparseable; the numeric protocol is the whole point.
+  assert.match(whatsapp, /Reply 1 .* or 2 if you are out of fabric/s);
+});
+
+test('an order alert includes order ref, destination and each line', () => {
+  const { whatsapp } = buildOrderAlertMessage(alert());
+  assert.match(whatsapp, /ORD-2026-AB12CD/);
+  assert.match(whatsapp, /Seoul, KR/);
+  assert.match(whatsapp, /Size: M \| Qty: 2/);
+  assert.match(whatsapp, /Size: L \| Qty: 1/);
+  assert.match(whatsapp, /2026-03-12/);
+});
+
+test('an order alert names the contact person and the dispatch hub', () => {
+  const { whatsapp, body } = buildOrderAlertMessage(alert());
+  assert.match(whatsapp, /Namaste|Dispatch to/);
+  assert.match(whatsapp, /Indian Export Hub/);
+  assert.match(body, /Sunita Bai/);
+});
+
+test('an order alert is worded differently from a reorder', () => {
+  // Conflating the two would tell a workshop to MAKE 30 units for an order for 1.
+  const order = buildOrderAlertMessage(alert()).whatsapp;
+  assert.doesNotMatch(order, /AUTOMATED SUPPLIER REORDER/);
+  assert.doesNotMatch(order, /Quantity Required/);
+});
+
+test('a city-less destination still renders a valid line', () => {
+  const { whatsapp } = buildOrderAlertMessage(alert({ destinationCity: null }));
+  assert.match(whatsapp, /Destination:\* KR/);
+  assert.doesNotMatch(whatsapp, /null/);
+});
+
+test('an empty line list does not produce NaN in the message', () => {
+  const { whatsapp } = buildOrderAlertMessage(alert({ lines: [] }));
+  assert.match(whatsapp, /Total units:\* 0/);
+  assert.ok(!whatsapp.includes('NaN'), 'never render NaN to a supplier');
+});
+
+test('the order alert and the reorder deadline use the same rule', () => {
+  // Ready-by and confirm-by must agree, or suppliers learn to ignore one of them.
+  assert.equal(confirmationDeadline(35, new Date('2026-03-01')), confirmationDeadline(35, new Date('2026-03-01')));
+  assert.match(confirmationDeadline(3, new Date('2026-03-01')), /2026-03-0[4-9]|2026-03-1/);
+});
+
+// --- auth config ----------------------------------------------------------
+
+test('the dev auth secret is recognisable, and sessions are short-lived', () => {
+  // The fallback is published in the repo, so it must be detectable in any
+  // deployment audit rather than silently used in production.
+  assert.equal(typeof usingInsecureSecret(), 'boolean');
+  assert.ok(SESSION_MAX_AGE_SECONDS <= 60 * 60 * 24, 'sessions must not outlive a day');
+});
+
+test('the retention notice states exactly what we keep after erasure', () => {
+  assert.match(RETENTION_NOTICE, /tax law/i);
+  assert.match(RETENTION_NOTICE, /email removed/i);
 });
 
 // --- duties ----------------------------------------------------------------

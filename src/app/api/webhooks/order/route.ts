@@ -18,7 +18,7 @@ import { NextResponse } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { prisma } from '@/lib/db';
 import { applyMovement, evaluateReorder, nextPurchaseOrderReference, type SkuState } from '@/lib/inventory';
-import { confirmationDeadline, dispatchPurchaseOrder, type DispatchLine } from '@/lib/dispatch';
+import { confirmationDeadline, dispatchPurchaseOrder, dispatchOrderAlert, type DispatchLine, type DispatchTarget, type OrderAlertLine } from '@/lib/dispatch';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -89,6 +89,18 @@ export async function POST(request: Request) {
 
   if (order.status === 'PENDING_PAYMENT') {
     await prisma.order.update({ where: { id: order.id }, data: { status: 'PAID' } });
+  }
+
+  // Group this order's lines by supplier: one workshop gets ONE message listing
+  // everything it must prepare, not one message per line item.
+  const alerts = await buildOrderAlerts(order);
+
+  // Tell the workshops BEFORE doing stock work, so a slow WhatsApp API never
+  // delays the decrement that follows it.
+  const alertResults = [];
+  for (const alert of alerts) {
+    const sent = await dispatchOrderAlert(alert);
+    alertResults.push({ supplier: alert.supplier.supplierName, lines: alert.lines.length, sent });
   }
 
   const results: ReorderResult[] = [];
@@ -216,7 +228,7 @@ export async function POST(request: Request) {
     results.push(entry);
   }
 
-  return NextResponse.json({ received: true, eventId: event.id, order: order.reference, results });
+  return NextResponse.json({ received: true, eventId: event.id, order: order.reference, alerts: alertResults, results });
 }
 
 interface ReorderResult {
@@ -229,4 +241,60 @@ interface ReorderResult {
     purchaseOrder?: string;
     dispatch?: { channel: string; ok: boolean; simulated: boolean; detail: string }[];
   };
+}
+
+/**
+ * Builds one order-alert per supplier involved in this order.
+ *
+ * Grouping by supplier is the whole point: a karigah who made three items
+ * should get ONE WhatsApp message, not three. Three messages is three
+ * interruptions, and the replies no longer map to lines.
+ */
+async function buildOrderAlerts(order: { reference: string; destinationCountry: string; items: { productId: string; variantLabel: string; quantity: number }[] }) {
+  const bySupplier = new Map<string, { supplier: DispatchTarget; lines: OrderAlertLine[] }>();
+
+  for (const item of order.items) {
+    const variant = await prisma.productVariant.findFirst({
+      where: { product: { id: item.productId }, sizeLabel: item.variantLabel },
+      include: { stock: { include: { supplier: true } } },
+    });
+    const supplier = variant?.stock?.supplier;
+    if (!supplier) continue;
+
+    const product = await prisma.product.findUnique({ where: { id: item.productId } });
+    if (!product) continue;
+
+    const entry = bySupplier.get(supplier.id) ?? {
+      supplier: {
+        supplierName: supplier.name,
+        contactName: supplier.contactName,
+        whatsappE164: supplier.whatsappE164,
+        email: supplier.email,
+        city: supplier.city,
+        state: supplier.state,
+        leadTimeDays: supplier.leadTimeDays,
+      },
+      lines: [],
+    };
+
+    entry.lines.push({
+      title: product.title,
+      sku: product.slug,
+      size: item.variantLabel,
+      quantity: item.quantity,
+      fabric: product.fabric,
+      originCity: product.originCity,
+    });
+    bySupplier.set(supplier.id, entry);
+  }
+
+  return [...bySupplier.values()].map(({ supplier, lines }) => ({
+    orderReference: order.reference,
+    supplier,
+    lines,
+    destinationCountry: order.destinationCountry,
+    // Ready-by is a third of the supplier's own lead time, floored at 3 days —
+    // the same rule the reorder confirmation deadline uses.
+    readyBy: confirmationDeadline(supplier.leadTimeDays),
+  }));
 }

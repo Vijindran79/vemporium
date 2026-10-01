@@ -1,28 +1,43 @@
-Add GLB avatar rigs with bone-driven parametric scaling
+Auth, avatar persistence, GDPR rights, and supplier order alerts
 
-The supplied snippet used useGLTF with scale={[waist, 1, hips]} on the root.
-That stretches the head, neck and arms with the torso and renders anyone whose
-bust and hip differ as a barrel, and it 404s because base_avatar.glb does not
-exist. This implements the same intent correctly.
+Auth (Auth.js v5, credentials)
+- bcrypt at cost 12, and a dummy-hash comparison when no user exists so
+  "no such account" and "wrong password" take the same time
+- One error message for both failure cases, so nothing leaks which emails
+  are registered
+- Database sessions rather than JWTs: a stateless token cannot be revoked,
+  and erasure must sign a shopper out immediately rather than at token expiry
+- 8 hour sessions, not 30 days. Body measurements are sensitive
+- AUTH_SECRET falls back to a dev value that is published in this repo;
+  usingInsecureSecret() makes that detectable in a deployment audit
 
-- lib/rig.ts holds the scaling maths as a pure function, normalised against the
-  rig rest pose, so it is unit-testable without WebGL or a JSX runtime
-- Bones are scaled, not meshes: children inherit the transform and the skeleton
-  stays connected. Each region responds to the measurement that actually drives
-  it, and depth tracks girth more than width
-- AvatarAsset loads a .glb, clones it (so compare mode never shares transforms),
-  retints every material, and applies scales
-- Degrades at every step: no URL, a 404, or a rig with no recognised bones all
-  fall back to the procedural body via an error boundary
-- docs/GLB-PIPELINE.md is the artist contract: rest pose, bone names, Draco /
-  KTX2 export settings, size budgets
+Avatar persistence
+- GET/POST/DELETE /api/avatars, user resolved from the SESSION and never
+  from the request body. Accepting a client userId would make every route an
+  IDOR over Art. 9 data
+- Measurements range-checked and clamped on the way in; a bad payload must not
+  be able to poison a size recommendation
+- Updates are scoped to the owner, so a foreign id matches zero rows
+- Ten-avatar cap, to stop one account growing unbounded rows
 
-Two bugs the new tests caught before a customer could:
-- Shoulders never returned to 1.0 at the rest pose, so every avatar started
-  slightly shrugged. A bare constant multiplier deforms a rest pose; it does
-  not scale one
-- Menswear and womenswear drifted apart, because rest chest was 96cm and rest
-  bust 90cm. A rig is one mesh with one rest pose, so there is now a single
-  rest girth
+GDPR
+- Art. 15/20 export and Art. 17 erasure, implemented as separate operations:
+  you can delete one avatar and keep shopping
+- Erasure is a HARD delete. A soft-deleted row is still personal data
+- Orders are retained because tax law requires it, but re-parented to a
+  tombstone account first so the retained record is no longer personal data.
+  The trade-off is shown to the customer, not left implicit
+- DELETE requires an explicit {"confirm":"DELETE"} body
 
-Verification: 48 unit tests passing (was 39), tsc clean, next build clean.
+Supplier order alerts
+- The one genuinely correct idea in the earlier Express snippet: notify the
+  workshop on EVERY paid order, not only on reorder. Kept as a separate
+  message type, because telling a karigah to make 30 units for an order of 1
+  is a real and expensive mistake
+- Alerts are grouped by supplier: one message per workshop listing everything
+  it must prepare, not one per line item
+- Numeric reply protocol (1 = accepted, 2 = out of fabric) so acknowledgements
+  are machine-readable
+
+Verification: 58 unit tests (was 48), tsc clean, 20 routes build clean,
+unauthenticated access to /api/avatars and /api/account both return 401.

@@ -140,6 +140,109 @@ export async function dispatchPurchaseOrder(p: DispatchPayload): Promise<Dispatc
   return results;
 }
 
+// ---------------------------------------------------------------------------
+// Order alerts — a DIFFERENT message from a reorder
+// ---------------------------------------------------------------------------
+
+export interface OrderAlertLine {
+  title: string;
+  sku: string;
+  size: string;
+  quantity: number;
+  colourHex?: string | null;
+  fabric: string;
+  originCity?: string | null;
+}
+
+export interface OrderAlertPayload {
+  orderReference: string;
+  supplier: DispatchTarget;
+  lines: OrderAlertLine[];
+  destinationCountry: string;
+  destinationCity?: string | null;
+  /** ISO date the supplier must have the goods ready by. */
+  readyBy: string;
+}
+
+/**
+ * "Prepare this order" message.
+ *
+ * Deliberately distinct from the reorder PO. Conflating the two is how you end
+ * up with a workshop being told to *make* 30 units for an order for 1 — the two
+ * events have different urgency, different lead times and different replies.
+ *
+ * The reply protocol is numeric rather than free text, because a karigah
+ * replying "ok thanks" is not a machine-readable acknowledgement and a
+ * workshop that is out of fabric must be able to say so in one tap.
+ */
+function buildOrderAlert(p: OrderAlertPayload): { whatsapp: string; subject: string; body: string } {
+  const items = p.lines
+    .map(
+      (l, i) =>
+        `${i + 1}. ${l.title}\n   SKU: ${l.sku} | Size: ${l.size} | Qty: ${l.quantity}\n   Fabric: ${l.fabric}${l.originCity ? ` (${l.originCity})` : ''}`,
+    )
+    .join('\n\n');
+
+  const units = p.lines.reduce((a, l) => a + l.quantity, 0);
+
+  const whatsapp = `📦 *NEW ORDER ALERT* 📦
+*Order:* #${p.orderReference}
+*Destination:* ${p.destinationCity ? `${p.destinationCity}, ` : ''}${p.destinationCountry}
+*Ready by:* ${p.readyBy}
+
+${items}
+
+*Total units:* ${units}
+*Dispatch to:* Indian Export Hub / Dispatch Center
+
+Reply 1 to confirm you can prepare this, or 2 if you are out of fabric.`;
+
+  const subject = `[Vemporium] Order ${p.orderReference} — ${p.destinationCountry}`;
+
+  const rows = p.lines
+    .map(
+      (l) =>
+        `<tr><td>${l.title}</td><td>${l.sku}</td><td>${l.size}</td><td>${l.quantity}</td><td>${l.fabric}</td></tr>`,
+    )
+    .join('');
+
+  const body = `
+    <p>Namaste ${p.supplier.contactName ?? p.supplier.supplierName ?? 'team'},</p>
+    <p>We have a new international order to prepare.</p>
+    <p><strong>Order:</strong> ${p.orderReference}<br>
+       <strong>Destination:</strong> ${p.destinationCity ? `${p.destinationCity}, ` : ''}${p.destinationCountry}<br>
+       <strong>Ready by:</strong> ${p.readyBy}</p>
+    <table border="1" cellpadding="6" cellspacing="0">
+      <thead><tr><th>Item</th><th>SKU</th><th>Size</th><th>Qty</th><th>Fabric</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <p>Please confirm on WhatsApp (reply 1) or let us know if you are out of fabric (reply 2).</p>
+    <p>— Vemporium Sourcing</p>`;
+
+  return { whatsapp, subject, body };
+}
+
+/**
+ * Notifies a supplier that a paid order needs preparing.
+ *
+ * Best-effort and non-throwing, for the same reason as the reorder dispatch: a
+ * WhatsApp outage must never roll back a paid order.
+ */
+export async function dispatchOrderAlert(p: OrderAlertPayload): Promise<DispatchResult[]> {
+  const { whatsapp, subject, body } = buildOrderAlert(p);
+  const results: DispatchResult[] = [await sendWhatsApp(p.supplier.whatsappE164, whatsapp)];
+  if (p.supplier.email) {
+    results.push(await sendEmail(p.supplier.email, subject, body));
+  }
+  return results;
+}
+
+/** Exportable for the vendor dashboard preview. */
+export { buildOrderAlert as buildOrderAlertMessage };
+
+
+
+
 /** Confirmation deadline = a third of lead time, floored at 3 days. */
 export function confirmationDeadline(leadTimeDays: number, now = new Date()): string {
   const days = Math.max(3, Math.round(leadTimeDays / 3));

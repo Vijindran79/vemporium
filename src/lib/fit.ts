@@ -53,6 +53,19 @@ function easeFor(avgDelta: number): { ease: SizeFit['ease']; label: string } {
 }
 
 /**
+ * The 0-100 curve shared by every fit score in this module.
+ *
+ * 0% deviation -> 100, 25% deviation -> 0. Deliberately steep: a 12% girth
+ * error is a badly fitting garment and must not score ~85. Extracted so the
+ * body-block scorer (scoreFit) and the garment-spec scorer
+ * (calculateGarmentFit) cannot drift apart — two curves here would mean the
+ * PDP widget and the 3D overlay disagreeing about the same body.
+ */
+function fitScore(avgRel: number): number {
+  return Math.max(0, Math.min(100, Math.round(100 * (1 - avgRel / 0.25))));
+}
+
+/**
  * Reference blocks, in cm of BODY girth (not garment girth). This mirrors the
  * ladder in sizing.ts; both are asserted consistent by the test suite.
  */
@@ -116,9 +129,8 @@ function scoreAgainst(body: BodyParams, block: Block): SizeFit {
   ];
   const avgRel = rel.reduce((a, b) => a + b, 0) / rel.length;
 
-  // 0% deviation -> 100, 25% deviation -> 0. The curve is deliberately steep:
-  // a 12% girth error is a badly fitting garment and must not score ~85.
-  const score = Math.max(0, Math.min(100, Math.round(100 * (1 - avgRel / 0.25))));
+  // Shared curve — see fitScore. Do not re-tune this inline.
+  const score = fitScore(avgRel);
 
   const avgDelta = (deltas.bust + deltas.waist + deltas.hip) / 3;
   return { size: block.label, score, deltas, ease: easeFor(avgDelta).ease };
@@ -160,4 +172,86 @@ export function scoreFit(body: BodyParams): FitReport {
 /** "96%" style label, or null when we are not confident enough to claim one. */
 export function confidenceLabel(report: FitReport): string | null {
   return report.confident ? `${report.best.score}%` : null;
+}
+
+// ---------------------------------------------------------------------------
+// Garment-spec scoring — the 3D overlay path
+// ---------------------------------------------------------------------------
+
+/**
+ * A garment's cut measurements for one size, in cm of BODY girth the size is
+ * cut to fit (same convention as the reference blocks above, so scores are
+ * comparable with scoreFit).
+ *
+ * Supplied by the catalog (ProductVariant bust/waist/hip/chest), not by the
+ * reference ladder: a Banarasi sherwani block and a cotton kurta block genuinely
+ * differ, and scoring both against one ladder would hide that.
+ */
+export interface GarmentSizeSpec {
+  size: SizeLabel;
+  bustCm: number;
+  waistCm: number;
+  hipCm: number;
+  /** Menswear cut. Falls back to bustCm when absent. */
+  chestCm?: number;
+}
+
+export interface GarmentFit {
+  size: SizeLabel;
+  /** 0-100, same curve as SizeFit.score. */
+  score: number;
+  /**
+   * Signed cm deltas (body minus garment block), so the overlay can say
+   * "2cm tight at the waist". Positive = body exceeds the block = snug.
+   */
+  deltas: { bust: number; waist: number; hip: number };
+  ease: SizeFit['ease'];
+}
+
+export interface GarmentFitReport {
+  best: GarmentFit;
+  /** Every supplied size scored, ordered best-first. */
+  ranked: GarmentFit[];
+  recommended: SizeLabel;
+  confident: boolean;
+}
+
+/**
+ * Scores a shopper's body against a garment's OWN size specs (XS-XXL).
+ *
+ * Same steep 0-100 curve as scoreFit, over the three girths only: garment
+ * specs carry no height range, and length is a hem concern handled by the
+ * draper (lengthCm), not the fit score. Height never moves this number, which
+ * is why a tall shopper and a short shopper with identical girths score
+ * identically here and differ only in the rendered hem.
+ */
+export function calculateGarmentFit(body: BodyParams, specs: GarmentSizeSpec[]): GarmentFitReport {
+  if (!Array.isArray(specs) || specs.length === 0) {
+    throw new Error('calculateGarmentFit requires at least one garment size spec');
+  }
+
+  const mens = isMens(body.gender);
+  const actualBust = mens ? (body.chestCm ?? 96) : (body.bustCm ?? 90);
+
+  const ranked = specs
+    .map((spec): GarmentFit => {
+      const targetBust = mens ? (spec.chestCm ?? spec.bustCm) : spec.bustCm;
+      const deltas = {
+        bust: actualBust - targetBust,
+        waist: body.waistCm - spec.waistCm,
+        hip: body.hipCm - spec.hipCm,
+      };
+      const rel = [
+        Math.abs(deltas.bust) / targetBust,
+        Math.abs(deltas.waist) / spec.waistCm,
+        Math.abs(deltas.hip) / spec.hipCm,
+      ];
+      const avgRel = (rel[0] + rel[1] + rel[2]) / 3;
+      const avgDelta = (deltas.bust + deltas.waist + deltas.hip) / 3;
+      return { size: spec.size, score: fitScore(avgRel), deltas, ease: easeFor(avgDelta).ease };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  const best = ranked[0];
+  return { best, ranked, recommended: best.size, confident: best.score >= MINIMUM_CONFIDENCE };
 }

@@ -143,6 +143,8 @@ test('an order persists its fitting snapshot as jsonb and returns it intact', as
   assert.equal(snap.body.waistCm, 70.1);
   // Normalised: a missing bust is null, not absent. A JSON column whose field is
   // sometimes missing and sometimes null is a schema nobody can query later.
+  assert.ok('bustCm' in snap.body);
+});
 // ===========================================================================
 // Phase 4 — markPaidAndFulfil (the path that has never run)
 // ===========================================================================
@@ -232,6 +234,13 @@ test('stock cannot be driven negative by an order larger than on hand', async ()
   const outcome = await markPaidAndFulfil(order.stripePaymentIntentId!);
 
   assert.equal(outcome.status, 'fulfilled', 'the customer paid; stock must not block fulfilment');
+
+  const stock = await stockOf(variant.stock!.skuId);
+  assert.ok(stock >= 0, `stock must never go negative (was ${stock})`);
+
+  const row = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+  assert.equal(row.status, 'PAID', 'a paid order stays PAID even when short on stock');
+});
 // ===========================================================================
 // Phase 5 — outbox worker: claiming, orphaned locks, dead letters
 // ===========================================================================
@@ -417,19 +426,10 @@ test('a FRESH lock is not stolen from a live worker', async () => {
   assert.equal(reclaimed, 0, 'nothing should be reclaimed while the lock is fresh');
 });
 
-  const stock = await stockOf(variant.stock!.skuId);
-  assert.ok(stock >= 0, `stock must never go negative (was ${stock})`);
-
-  const row = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
-  assert.equal(row.status, 'PAID', 'a paid order stays PAID even when short on stock');
-});
-
 test('an unknown payment intent is a no-op, not a crash', async () => {
   const outcome = await markPaidAndFulfil(`pi_does_not_exist_${uniq()}`);
   assert.equal(outcome.status, 'already_processed');
   assert.equal(outcome.orderId, null);
-});
-  assert.ok('bustCm' in snap.body);
 });
 
 test('the snapshot does NOT follow the profile when measurements change', async () => {

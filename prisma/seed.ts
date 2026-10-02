@@ -90,6 +90,9 @@ async function main() {
         found ?? (await prisma.productVariant.create({ data: { productId: product.id, sizeLabel: size, sizeCode: i + 1 } }));
 
       const stock = await prisma.inventory.findUnique({ where: { productVariantId: variant.id } });
+      // Upsert, not create-once: the integration suite buys from these shelves,
+      // so a re-seed must restore them. A seed that only fills empty shelves
+      // leaves every later test run failing on stock the suite itself consumed.
       if (!stock) {
         await prisma.inventory.create({
           data: {
@@ -100,6 +103,11 @@ async function main() {
             status: 'IN_STOCK',
             supplierId,
           },
+        });
+      } else if (stock.stockLevel < perSize) {
+        await prisma.inventory.update({
+          where: { productVariantId: variant.id },
+          data: { stockLevel: perSize, status: 'IN_STOCK', supplierId: stock.supplierId ?? supplierId },
         });
       }
     }

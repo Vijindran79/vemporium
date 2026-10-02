@@ -14,7 +14,8 @@
     "db:generate": "prisma generate",
     "db:seed": "tsx prisma/seed.ts",
     "test:integration": "tsx --test src/lib/integration.test.ts",
-    "db:migrate": "prisma migrate dev"
+    "db:migrate": "prisma migrate dev",
+    "worker": "tsx src/jobs/outbox-worker.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",

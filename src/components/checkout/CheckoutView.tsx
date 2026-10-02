@@ -18,8 +18,8 @@ import { cartSubtotalUsd, useCartStore } from '@/store/cart-store';
 import { MARKET_COUNTRIES, useMarketStore } from '@/store/market-store';
 import { useMoney } from '@/components/shell/MoneyProvider';
 import { calculateLandedCost } from '@/lib/duties';
-import { paymentMethodsFor, toMinorUnits } from '@/lib/payments';
-import { currencyForCountry, localeForCountry } from '@/lib/currency';
+import { paymentMethodsFor } from '@/lib/payments';
+import { currencyForCountry, toMinorUnits, localeForCountry } from '@/lib/currency';
 
 type Step = 'delivery' | 'payment' | 'review';
 
@@ -43,9 +43,15 @@ export function CheckoutView() {
   const landed = useMemo(() => calculateLandedCost(subtotalUsd, country), [subtotalUsd, country]);
 
   const selected = methods.find((m) => m.provider === method) ?? methods[0];
-  // totalUsd is the USD landed base; minor units are derived in the PSP's own
-  // convention, which the route applies against the rate we send alongside.
-  const minorUnits = toMinorUnits(landed.totalUsd, selected?.zeroDecimal ?? false);
+  // DISPLAY ONLY. The amount actually charged is derived server-side from the
+  // persisted Order.totalLocal in /api/checkout/create-intent — never from
+  // anything computed here.
+  //
+  // The currency CODE decides the minor-unit exponent, not the payment method's
+  // `zeroDecimal` flag: the flag is a property of the provider, but the minor
+  // unit is a property of the money, and conflating them is how a JPY basket
+  // ends up charged in cents.
+  const minorUnits = toMinorUnits(landed.totalUsd * rate, currency);
 
   if (reference) {
     return (

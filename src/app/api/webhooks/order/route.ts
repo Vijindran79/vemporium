@@ -1,31 +1,40 @@
 /**
- * POST /api/webhooks/order  —  the supply-chain entry point.
+ * POST /api/webhooks/order — INTERNAL / MANUAL order status updates only.
  *
- * A payment provider (Stripe today) calls this once a checkout succeeds. It:
- *   1. verifies the webhook signature
- *   2. decrements inventory for every line item
- *   3. evaluates the replenishment rules
- *   4. creates a purchase order and dispatches it to the Indian supplier
+ * DEPRECATED FOR PAYMENT FULFILMENT.
  *
- * Two deliberate choices:
- *   - Idempotency. Providers retry aggressively; we key on the event id so a
- *     duplicate delivery can never double-decrement stock.
- *   - Never throws on dispatch failure. The order is already paid; a WhatsApp
- *     outage must not roll it back. The PO stays in DRAFT for the retry sweep.
+ * This endpoint used to accept `order.created` and `order.paid` and, on receipt,
+ * mark the order paid, decrement stock and message the workshops. That is now
+ * the exclusive job of POST /api/webhooks/stripe.
+ *
+ * Why the duplication had to go rather than merely be discouraged: both paths
+ * triggered fulfilment on DIFFERENT provider events for the SAME payment. A
+ * single customer order could decrement stock twice and send two "prepare this"
+ * messages to a karigah. Two implementations of the same state transition will
+ * drift, so one of them was deleted.
+ *
+ * Payment-driven events are now REFUSED with 410 Gone, not quietly ignored — an
+ * operator who still has something wired to this endpoint should find out.
+ *
+ * This endpoint remains for:
+ *   - order.refunded
+ *   - manual/administrative status corrections
+ *
+ * It never touches stock and never contacts a supplier. Restocking a returned
+ * garment is a deliberate inventory decision, not a side effect of a status
+ * flip, and is not automated here.
  */
 
 import { NextResponse } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { prisma } from '@/lib/db';
-import { applyMovement, evaluateReorder, nextPurchaseOrderReference, type SkuState } from '@/lib/inventory';
-import { confirmationDeadline, dispatchPurchaseOrder, dispatchOrderAlert, type DispatchLine, type DispatchTarget, type OrderAlertLine } from '@/lib/dispatch';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 interface OrderEvent {
   id: string;
-  type: 'order.created' | 'order.paid' | 'order.refunded';
+  type: 'order.created' | 'order.paid' | 'order.refunded' | 'order.status_changed';
   createdAt: string;
   data: {
     orderReference: string;
@@ -33,8 +42,12 @@ interface OrderEvent {
     currency: string;
     fxRate: number;
     items: { skuId: string; quantity: number }[];
+    status?: string;
   };
 }
+
+/** Events that used to trigger fulfilment here, and must now go to Stripe. */
+const PAYMENT_EVENTS = new Set(['order.created', 'order.paid']);
 
 /** Constant-time HMAC comparison so the secret cannot be leaked via timing. */
 function verifySignature(raw: string, signature: string | null): boolean {
@@ -64,13 +77,47 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Malformed JSON' }, { status: 400 });
   }
 
-  if (event.type !== 'order.created' && event.type !== 'order.paid') {
+  if (PAYMENT_EVENTS.has(event.type)) {
+    return NextResponse.json(
+      {
+        error: `${event.type} is no longer handled here.`,
+        useInstead: '/api/webhooks/stripe',
+        reason:
+          'Payment fulfilment is exclusively the Stripe webhook. Handling it in two places let one order decrement stock twice and alert suppliers twice.',
+      },
+      { status: 410 },
+    );
+  }
+
+  if (event.type !== 'order.refunded' && event.type !== 'order.status_changed') {
     return NextResponse.json({ received: true, ignored: event.type });
   }
 
-  // --- idempotency ---------------------------------------------------------
-  const existing = await prisma.webhookEvent.findUnique({ where: { providerEventId: event.id } });
-  if (existing) {
+  // Validated BEFORE any database work, deliberately.
+  //
+  // Two reasons. First, security: this endpoint must not be a back door to PAID.
+  // The PAID transition belongs to the Stripe webhook alone, which is the entire
+  // reason the old fulfilment path was deleted — leaving PAID settable here would
+  // recreate the double-counting hole through the side door. Second, an invalid
+  // request should be rejected without spending a database round trip.
+  const allowed = new Set(['REFUNDED', 'CANCELLED', 'DELIVERED', 'SHIPPED', 'DISPATCHED', 'FULFILLING']);
+
+  const requested = event.type === 'order.refunded' ? 'REFUNDED' : (event.data.status ?? '').toUpperCase();
+  if (!allowed.has(requested)) {
+    return NextResponse.json(
+      {
+        error: `status must be one of: ${[...allowed].join(', ')}`,
+        note: 'PAID is not settable here. Payment fulfilment is exclusively /api/webhooks/stripe.',
+      },
+      { status: 400 },
+    );
+  }
+  const target = requested as 'REFUNDED';
+
+  const existingEvent = await prisma.webhookEvent.findUnique({
+    where: { providerEventId: event.id },
+  });
+  if (existingEvent) {
     return NextResponse.json({ received: true, duplicate: true, eventId: event.id });
   }
 
@@ -80,221 +127,28 @@ export async function POST(request: Request) {
 
   const order = await prisma.order.findUnique({
     where: { reference: event.data.orderReference },
-    include: { items: true },
+    select: { id: true, reference: true, status: true },
   });
 
   if (!order) {
     return NextResponse.json({ error: `Unknown order ${event.data.orderReference}` }, { status: 404 });
   }
 
-  if (order.status === 'PENDING_PAYMENT') {
-    await prisma.order.update({ where: { id: order.id }, data: { status: 'PAID' } });
-  }
+  const updated = await prisma.order.updateMany({
+    where: { id: order.id, status: { not: target } },
+    data: { status: target },
+  });
 
-  // Group this order's lines by supplier: one workshop gets ONE message listing
-  // everything it must prepare, not one message per line item.
-  const alerts = await buildOrderAlerts(order);
-
-  // Tell the workshops BEFORE doing stock work, so a slow WhatsApp API never
-  // delays the decrement that follows it.
-  const alertResults = [];
-  for (const alert of alerts) {
-    const sent = await dispatchOrderAlert(alert);
-    alertResults.push({ supplier: alert.supplier.supplierName, lines: alert.lines.length, sent });
-  }
-
-  const results: ReorderResult[] = [];
-
-  for (const item of order.items) {
-    const variant = await prisma.productVariant.findFirst({
-      where: { product: { id: item.productId }, sizeLabel: item.variantLabel },
-      include: {
-        stock: {
-          include: {
-            supplier: true,
-            purchaseOrders: {
-              where: { purchaseOrder: { status: { in: ['DRAFT', 'SENT', 'ACKNOWLEDGED', 'IN_PRODUCTION'] } } },
-            },
-          },
-        },
-      },
-    });
-
-    const stock = variant?.stock;
-    if (!stock) {
-      results.push({ skuId: 'unknown', now: 0, status: 'NO_SKU', reorder: { triggered: false, reason: 'No inventory record for this line item' } });
-      continue;
-    }
-
-    const sku: SkuState = {
-      skuId: stock.skuId,
-      productId: item.productId,
-      supplierId: stock.supplierId,
-      stockLevel: stock.stockLevel,
-      reorderThreshold: stock.reorderThreshold,
-      reorderQuantity: stock.reorderQuantity,
-      status: stock.status,
-      openPurchaseOrder: stock.purchaseOrders.length > 0,
-    };
-
-    // 1. decrement — online and retail share this row, so a web sale and an
-    //    in-store sale can never oversell each other.
-    const movement = applyMovement(sku, {
-      skuId: sku.skuId,
-      delta: -item.quantity,
-      channel: 'online',
-      reason: `Order ${order.reference}`,
-    });
-
-    await prisma.inventory.update({
-      where: { skuId: sku.skuId },
-      data: { stockLevel: movement.now, status: movement.status },
-    });
-
-    const entry: ReorderResult = {
-      skuId: sku.skuId,
-      now: movement.now,
-      status: movement.status,
-      reorder: { triggered: false, reason: `Stock healthy (${movement.now} on hand)` },
-    };
-
-    // 2. replenishment decision
-    if (movement.crossedThreshold || movement.status === 'OUT_OF_STOCK') {
-      const decision = evaluateReorder(sku);
-
-      if (decision.shouldReorder && stock.supplier) {
-        const product = await prisma.product.findUnique({ where: { id: item.productId } });
-        const dispatchLine: DispatchLine = {
-          skuId: sku.skuId,
-          title: product?.title ?? 'Garment',
-          sizeLabel: item.variantLabel,
-          colourHex: variant?.colourHex ?? null,
-          units: decision.units,
-          fabric: product?.fabric ?? 'SILK',
-          weave: product?.weave ?? 'HANDLOOM',
-          workType: product?.workType ?? 'PLAIN',
-          originCity: product?.originCity ?? null,
-        };
-
-        // 3. create the PO
-        const reference = nextPurchaseOrderReference();
-        const deadline = confirmationDeadline(stock.supplier.leadTimeDays);
-        const po = await prisma.purchaseOrder.create({
-          data: {
-            reference,
-            supplierId: stock.supplier.id,
-            status: 'DRAFT',
-            trigger: decision.trigger ?? 'MANUAL',
-            units: decision.units,
-            fabricSpec: `${dispatchLine.fabric} / ${dispatchLine.weave} / ${dispatchLine.workType}`,
-            deliveryDeadline: new Date(deadline),
-            lines: { create: { skuId: sku.skuId, quantity: decision.units } },
-          },
-        });
-
-        // 4. dispatch — failures leave the PO in DRAFT for the retry sweep
-        const dispatched = await dispatchPurchaseOrder({
-          reference: po.reference,
-          supplier: {
-            supplierName: stock.supplier.name,
-            contactName: stock.supplier.contactName,
-            whatsappE164: stock.supplier.whatsappE164,
-            email: stock.supplier.email,
-            city: stock.supplier.city,
-            state: stock.supplier.state,
-            leadTimeDays: stock.supplier.leadTimeDays,
-          },
-          lines: [dispatchLine],
-          decision,
-          deadline,
-        });
-
-        const allOk = dispatched.every((d) => d.ok);
-        await prisma.purchaseOrder.update({
-          where: { id: po.id },
-          data: {
-            status: allOk ? 'SENT' : 'DRAFT',
-            dispatchedVia: dispatched.filter((d) => d.ok).map((d) => d.channel),
-            sentAt: allOk ? new Date() : null,
-          },
-        });
-
-        entry.reorder = { triggered: true, reason: decision.reason, purchaseOrder: reference, dispatch: dispatched };
-      } else {
-        entry.reorder = { triggered: false, reason: decision.reason };
-      }
-    }
-
-    results.push(entry);
-  }
-
-  return NextResponse.json({ received: true, eventId: event.id, order: order.reference, alerts: alertResults, results });
-}
-
-interface ReorderResult {
-  skuId: string;
-  now: number;
-  status: string;
-  reorder: {
-    triggered: boolean;
-    reason: string;
-    purchaseOrder?: string;
-    dispatch?: { channel: string; ok: boolean; simulated: boolean; detail: string }[];
-  };
-}
-
-/**
- * Builds one order-alert per supplier involved in this order.
- *
- * Grouping by supplier is the whole point: a karigah who made three items
- * should get ONE WhatsApp message, not three. Three messages is three
- * interruptions, and the replies no longer map to lines.
- */
-async function buildOrderAlerts(order: { reference: string; destinationCountry: string; items: { productId: string; variantLabel: string; quantity: number }[] }) {
-  const bySupplier = new Map<string, { supplier: DispatchTarget; lines: OrderAlertLine[] }>();
-
-  for (const item of order.items) {
-    const variant = await prisma.productVariant.findFirst({
-      where: { product: { id: item.productId }, sizeLabel: item.variantLabel },
-      include: { stock: { include: { supplier: true } } },
-    });
-    const supplier = variant?.stock?.supplier;
-    if (!supplier) continue;
-
-    const product = await prisma.product.findUnique({ where: { id: item.productId } });
-    if (!product) continue;
-
-    const entry = bySupplier.get(supplier.id) ?? {
-      supplier: {
-        supplierName: supplier.name,
-        contactName: supplier.contactName,
-        whatsappE164: supplier.whatsappE164,
-        email: supplier.email,
-        city: supplier.city,
-        state: supplier.state,
-        leadTimeDays: supplier.leadTimeDays,
-      },
-      lines: [],
-    };
-
-    entry.lines.push({
-      title: product.title,
-      sku: product.slug,
-      size: item.variantLabel,
-      quantity: item.quantity,
-      fabric: product.fabric,
-      originCity: product.originCity,
-    });
-    bySupplier.set(supplier.id, entry);
-  }
-
-  return [...bySupplier.values()].map(({ supplier, lines }) => ({
-    orderReference: order.reference,
-    supplier,
-    lines,
-    destinationCountry: order.destinationCountry,
-    // Ready-by is a third of the supplier's own lead time, floored at 3 days —
-    // the same rule the reorder confirmation deadline uses.
-    readyBy: confirmationDeadline(supplier.leadTimeDays),
-  }));
+  return NextResponse.json({
+    received: true,
+    eventId: event.id,
+    order: order.reference,
+    previousStatus: order.status,
+    status: target,
+    changed: updated.count > 0,
+    // Stock and supplier alerts are deliberately NOT touched. If a return needs
+    // the units back on the shelf, that is an explicit inventory decision.
+    stockAdjusted: false,
+    suppliersNotified: false,
+  });
 }

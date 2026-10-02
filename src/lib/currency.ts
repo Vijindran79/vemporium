@@ -98,6 +98,66 @@ export function localeForCountry(country: string | null | undefined): string {
   return COUNTRY_LOCALE[country.toUpperCase()] ?? 'en';
 }
 
+/**
+ * Payment amounts.
+ *
+ * Stripe charges in the currency's MINOR unit — cents for USD, whole yen for
+ * JPY, whole won for KRW. Getting this wrong is not a rounding nit: charging
+ * 100x too much is a real money bug.
+ *
+ * The exponent comes from the currency table rather than `amount * 100` because
+ * JPY and KRW have no minor unit at all. Hard-coding 100 would turn a
+ * ¥12,000 order into ¥1,200,000.
+ */
+
+/** Minor-unit exponent for a currency: 2 for USD, 0 for JPY and KRW. */
+export function minorUnitExponent(currencyCode: string): number {
+  return isCurrencyCode(currencyCode) ? CURRENCIES[currencyCode].decimals : 2;
+}
+
+/**
+ * Converts a major-unit amount (12.34 USD) to the minor unit Stripe expects.
+ *
+ * Must return an integer: Stripe rejects amounts that do not match the
+ * currency's exponent.
+ */
+export function toMinorUnits(amountMajor: number, currencyCode: string): number {
+  if (!Number.isFinite(amountMajor)) {
+    throw new Error(`Cannot convert a non-finite amount (${amountMajor}) to minor units`);
+  }
+  const scaled = amountMajor * 10 ** minorUnitExponent(currencyCode);
+  // The epsilon nudge matters: 8.115 * 100 evaluates to 811.4999999999999 in
+  // IEEE-754, which Math.round would floor to 811 — silently undercharging by
+  // one minor unit on a value that should round up.
+  return Math.round(scaled + Number.EPSILON * Math.abs(scaled));
+}
+
+/** Stripe expects a lowercase ISO currency code. */
+export function stripeCurrencyCode(currencyCode: string): string {
+  return currencyCode.toLowerCase();
+}
+
+/**
+ * Smallest charge Stripe accepts per currency, in minor units. Below this the
+ * intent is rejected, so we refuse locally with a readable error rather than
+ * letting the API return an opaque 400.
+ */
+const MIN_CHARGE_MINOR_UNITS: Record<string, number> = {
+  usd: 50,
+  eur: 50,
+  gbp: 50,
+  krw: 1000,
+  jpy: 50,
+  inr: 100,
+  aud: 50,
+  cad: 50,
+};
+
+export function minimumChargeMinorUnits(currencyCode: string): number {
+  return MIN_CHARGE_MINOR_UNITS[stripeCurrencyCode(currencyCode)] ?? 50;
+}
+
+/** Locale tag for a currency, e.g. KRW -> ko-KR. */
 export function localeTagForCurrency(code: CurrencyCode): string {
   return CURRENCIES[code].locale;
 }

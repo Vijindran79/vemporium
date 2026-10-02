@@ -24,6 +24,7 @@ import { calculateLandedCost } from '@/lib/duties';
 import { isCurrencyCode, type CurrencyCode } from '@/lib/currency';
 import { CATALOG } from '@/lib/catalog';
 import { auth } from '@/lib/auth';
+import { newCheckoutToken, hashCheckoutToken } from '@/lib/checkout-token';
 import { buildFittingSnapshot } from '@/lib/fitting-snapshot';
 import { clampBodyParams, type BodyParams } from '@/lib/sizing';
 
@@ -161,6 +162,15 @@ export async function POST(request: Request) {
   const rawKey = typeof body.idempotencyKey === 'string' ? body.idempotencyKey.trim() : '';
   const idempotencyKey = rawKey ? rawKey.slice(0, MAX_IDEMPOTENCY_KEY_LEN) : null;
 
+  // Minted for EVERY order, not just guests: a signed-in shopper who reopens
+  // checkout in a tab that has lost its cookie still needs a way to prove the
+  // order is theirs. Returned to the client exactly once — only the SHA-256 is
+  // stored, so it cannot be recovered later.
+  //
+  // Declared BEFORE the idempotency replay check, because a replayed order also
+  // needs the token returned: the client is retrying and has nothing else.
+  const checkoutToken = newCheckoutToken();
+
   // Preflight reads (idempotency replay, then the avatar snapshot).
   //
   // Wrapped deliberately: an unreachable database must degrade to the SAME 503
@@ -184,6 +194,7 @@ export async function POST(request: Request) {
         return NextResponse.json({
           reference: existing.reference,
           orderId: existing.id,
+          checkoutToken,
           status: existing.status,
           persisted: true,
           replayed: true,
@@ -226,6 +237,9 @@ export async function POST(request: Request) {
     );
   }
 
+  // Minted for EVERY order, not just guests. A signed-in shopper who later opens
+  // checkout in a tab that has lost its cookie still has a way to prove the
+  // order is theirs. Returned exactly once — only the hash is stored.
   try {
     const order = await prisma.order.create({
       data: {
@@ -245,6 +259,7 @@ export async function POST(request: Request) {
         destinationCountry: body.destinationCountry ?? 'US',
         paymentProvider: body.paymentProvider,
         idempotencyKey,
+        checkoutTokenHash: hashCheckoutToken(checkoutToken),
         // Prisma's JSON input type wants an index signature; FittingSnapshot is
         // structurally correct but does not declare one. The cast is safe: the
         // object is built by buildFittingSnapshot from primitives, so it does
@@ -265,6 +280,9 @@ export async function POST(request: Request) {
     return NextResponse.json({
       reference: order.reference,
       orderId: order.id,
+      // Returned ONCE. The server keeps only its SHA-256, so this cannot be
+      // recovered later — the client must hold it for the checkout attempt.
+      checkoutToken,
       status: order.status,
       persisted: true,
       linkedAccount: !!userId,

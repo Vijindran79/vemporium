@@ -21,7 +21,7 @@ import {
 } from './inventory.ts';
 import { recommendSize, defaultBody, isKid, isMens, bmi, SIZE_ORDER, type BodyParams } from './sizing.ts';
 import { calculateLandedCost, bandForCountry } from './duties.ts';
-import { paymentMethodsFor, toMinorUnits } from './payments.ts';
+import { paymentMethodsFor } from './payments.ts';
 import { convert, formatMoney } from './fx.ts';
 import { currencyForCountry } from './currency.ts';
 import { useAvatarStore } from '../store/avatar-store.ts';
@@ -32,6 +32,8 @@ import { RETENTION_NOTICE } from './privacy.ts';
 import { scoreFit, MINIMUM_CONFIDENCE } from './fit.ts';
 import { buildFittingSnapshot, isFittingSnapshot } from './fitting-snapshot.ts';
 import { clampBodyParams, BODY_LIMITS } from './sizing.ts';
+import { toMinorUnits, stripeCurrencyCode, minimumChargeMinorUnits } from './currency.ts';
+import { newCheckoutToken, hashCheckoutToken, checkoutTokenMatches } from './checkout-token.ts';
 import { cmToIn, inchToCm, kgToLb, lbToKg, toFeetInches, formatLength } from './units.ts';
 
 const sku = (over: Partial<SkuState> = {}): SkuState => ({
@@ -434,8 +436,10 @@ test('an unknown market still gets card and PayPal', () => {
 });
 
 test('zero-decimal currencies are not multiplied by 100', () => {
-  assert.equal(toMinorUnits(29900, true), 29900, 'JPY stays in whole yen');
-  assert.equal(toMinorUnits(299, false), 29900, 'USD converts to cents');
+  // Driven by the currency CODE, not a boolean the caller must remember to set.
+  assert.equal(toMinorUnits(29900, 'JPY'), 29900, 'JPY stays in whole yen');
+  assert.equal(toMinorUnits(299, 'USD'), 29900, 'USD converts to cents');
+  assert.equal(toMinorUnits(29900, 'KRW'), 29900);
 });
 
 // --- currency --------------------------------------------------------------
@@ -533,6 +537,70 @@ test('heights render as feet and inches', () => {
   assert.deepEqual(toFeetInches(170), { feet: 5, inches: 7 });
   assert.equal(formatLength(170, 'metric'), '170 cm');
   assert.equal(formatLength(170, 'imperial'), '5′ 7″');
+});
+
+// --- payment amounts -----------------------------------------------------
+
+test('minor units use each currency exponent, not a hard-coded 100', () => {
+  // The bug this prevents: `amount * 100` on a JPY order charges 100x.
+  assert.equal(toMinorUnits(12.34, 'USD'), 1234);
+  assert.equal(toMinorUnits(12.34, 'EUR'), 1234);
+  // JPY and KRW have NO minor unit.
+  assert.equal(toMinorUnits(12000, 'JPY'), 12000);
+  assert.equal(toMinorUnits(1_380_000, 'KRW'), 1_380_000);
+  // INR is two-decimal despite the psychological rounding in the display table.
+  assert.equal(toMinorUnits(83.4, 'INR'), 8340);
+});
+
+test('minor unit conversion always returns an integer', () => {
+  for (const amount of [0.1, 8.115, 19.99, 1234.56, 0.07]) {
+    const minor = toMinorUnits(amount, 'USD');
+    assert.ok(Number.isInteger(minor), `${amount} produced a non-integer: ${minor}`);
+  }
+});
+
+test('half-cents round up rather than silently undercharging', () => {
+  // 8.115 * 100 is 811.4999999999999 in IEEE-754. Plain Math.round floors it to
+  // 811 — a one-cent undercharge on every such order.
+  assert.equal(toMinorUnits(8.115, 'USD'), 812);
+  assert.equal(toMinorUnits(0.005, 'USD'), 1);
+});
+
+test('minor unit conversion rejects non-finite amounts', () => {
+  // A NaN reaching Stripe is a 500 at the worst possible moment.
+  assert.throws(() => toMinorUnits(Number.NaN, 'USD'));
+  assert.throws(() => toMinorUnits(Number.POSITIVE_INFINITY, 'USD'));
+});
+
+test('stripe currency codes are lowercase', () => {
+  assert.equal(stripeCurrencyCode('KRW'), 'krw');
+  assert.equal(stripeCurrencyCode('JPY'), 'jpy');
+});
+
+test('minimum charge floors are sane per currency', () => {
+  assert.equal(minimumChargeMinorUnits('USD'), 50);
+  assert.equal(minimumChargeMinorUnits('krw'), 1000, 'lookup is case-insensitive');
+  // An unknown currency must still get a usable default, never 0.
+  assert.ok(minimumChargeMinorUnits('ZZZ') > 0);
+});
+
+// --- guest checkout capability token --------------------------------------
+
+test('a checkout token is high entropy and stored only as a hash', () => {
+  const token = newCheckoutToken();
+  const hash = hashCheckoutToken(token);
+
+  assert.notEqual(token, hash, 'the raw token must never be what is persisted');
+  assert.equal(hash.length, 64, 'sha256 hex');
+  assert.ok(checkoutTokenMatches(token, hash));
+  assert.ok(!checkoutTokenMatches('guess', hash));
+  assert.ok(!checkoutTokenMatches(token, null), 'a missing stored hash never matches');
+  assert.ok(!checkoutTokenMatches('', hash));
+
+  // Two tokens must not collide, or one guest could pay for another's order.
+  const seen = new Set<string>();
+  for (let i = 0; i < 500; i += 1) seen.add(newCheckoutToken());
+  assert.equal(seen.size, 500, 'token generation collided');
 });
 
 // --- fitting snapshot -----------------------------------------------------

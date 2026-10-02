@@ -104,10 +104,7 @@ export function paymentMethodsFor(country: string | null | undefined): PaymentMe
   return MARKETS[code]?.methods ?? GLOBAL_FALLBACKS;
 }
 
-/**
- * Converts a local-currency amount to the minor units a PSP expects.
- * Zero-decimal currencies (JPY, KRW) must NOT be multiplied by 100.
- */
-export function toMinorUnits(amount: number, zeroDecimal: boolean): number {
-  return zeroDecimal ? Math.round(amount) : Math.round(amount * 100);
-}
+// Minor-unit conversion deliberately does NOT live here. It used to, taking a
+// `zeroDecimal: boolean` that every caller had to get right — pass `false` for a
+// JPY order and you charge 100x. The currency code is always in hand at the call
+// site, so `toMinorUnits(amount, 'JPY')` in ./currency removes the flag entirely.

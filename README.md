@@ -283,22 +283,48 @@ Both use a numeric reply protocol (`1` = accepted, `2` = out of fabric) because
 a free-text "ok thanks" is not machine-readable, and a workshop that is out of
 fabric must be able to say so in one tap.
 
-`POST /api/webhooks/order` on a successful payment:
+`POST /api/webhooks/stripe` on `payment_intent.succeeded`:
 
-1. Verifies an HMAC signature (constant-time compare).
-2. Checks `WebhookEvent` for the provider event id — **providers retry, and a
-   duplicate delivery must never double-decrement stock.**
-3. Decrements inventory. Online and physical retail share one `stockLevel`
-   row, so the channels cannot oversell each other.
-4. Evaluates replenishment rules. A SKU with an open purchase order is skipped
-   — the guard that stops a Diwali spike from sending forty identical WhatsApp
-   messages to a Varanasi workshop.
-5. Creates a purchase order and dispatches by WhatsApp, then email.
-6. **Never throws on dispatch failure.** The order is already paid; the PO
-   stays `DRAFT` for a retry sweep.
+1. Verifies the Stripe signature against the **raw body** (no dev-mode bypass).
+2. Ignores every event type except `payment_intent.succeeded`.
+3. Guards the transition with a conditional `updateMany` on
+   `status === PENDING_PAYMENT`. Concurrent retries race on the row lock and
+   exactly one wins; the losers get a 200 so Stripe stops retrying.
+4. Decrements stock **conditionally** (`stockLevel >= qty`), so two orders racing
+   for the last unit cannot drive it negative. A shortfall is recorded but does
+   **not** block fulfilment — the money is captured, and refusing would be worse.
+5. Queues a `DispatchOutbox` row per supplier, then sends **after** the
+   transaction commits.
 
 Without Twilio/Resend credentials the dispatcher logs the exact message it
 would have sent, so the flow is demoable offline.
+
+### Notifications are not in the transaction
+
+`markPaidAndFulfil()` commits the status change, the stock decrement and the
+outbox rows atomically, and *then* sends the WhatsApp messages. Sending inside
+the transaction is wrong in both directions:
+
+- send, then roll back → a karigah has been told to start work on an order that
+  does not exist;
+- commit, then send fails → the customer has paid and nobody told the workshop,
+  so the order rots in `PENDING_PAYMENT` forever.
+
+A failed dispatch leaves the outbox row `FAILED` for a retry sweep. It never
+un-pays an order. The trade is deliberate: at-least-once notification in exchange
+for never telling a supplier about a rolled-back order.
+
+### Deprecated: `POST /api/webhooks/order`
+
+This endpoint used to accept `order.created` and `order.paid` and run the same
+fulfilment. One payment could therefore decrement stock twice and message a
+workshop twice — and two implementations of a state transition will drift. The
+path was **deleted**, not merely discouraged:
+
+- `order.created` / `order.paid` → `410 Gone`, naming `/api/webhooks/stripe`
+- `PAID` is not settable through it at all, so it cannot become a side door
+- still handles `order.refunded` and manual corrections, and never touches stock
+  or contacts a supplier
 
 ---
 

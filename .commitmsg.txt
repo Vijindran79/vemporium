@@ -1,49 +1,60 @@
-Link orders to the session before payment capture
+Stripe capture: one path to PAID, notifications out of the transaction
 
-Orders are resolved against the session inside POST /api/orders, so when the
-Stripe intent succeeds the webhook transitions an order that already has an
-owner. Capturing first means reconciling orphan guest orders afterwards,
-against a customer who is already asking where their order went.
+The state machine in the spec is right, but step 4 — dispatching supplier
+WhatsApp alerts inside prisma.$transaction — is wrong in both directions:
 
-- userId comes from the session, never the body. A client-supplied userId would
-  let anyone write orders into someone else's history
-- guest checkout still works, but requires an email. An order with no owner and
-  no email could never be delivered or refunded, only lost
-- idempotencyKey is client-supplied and stable per checkout ATTEMPT, so a
-  double-clicked "Place order" returns the original order rather than creating a
-  second one that gets charged twice. The unique constraint is the real guard;
-  a P2002 race resolves to the winning order instead of a 500
+  - send, then roll back -> a karigah has been told to start work on an order
+    that does not exist
+  - commit, then the send fails -> the customer paid and nobody told the
+    workshop, so the order rots in PENDING_PAYMENT forever
 
-fittingSnapshot freezes measurements at purchase
+Neither recovers automatically. So the transaction records INTENT (status,
+stock, a DispatchOutbox row) and returns; messages go out afterwards. A failed
+dispatch leaves the row FAILED for a retry sweep and never un-pays an order.
+The trade is deliberate: at-least-once notification in exchange for never
+telling a supplier about a rolled-back order.
 
-Order.fittingSnapshot JSON, not a foreign key. The shopper edits their profile
-next month; a return three months after that would otherwise be judged against
-the wrong body, and the blame would land on the customer for our bug.
+- Stripe webhook: raw body, signature verified before parsing, no dev-mode
+  bypass. An unauthenticated payment webhook is a free order-press, so unlike
+  the legacy internal one it refuses everything when the secret is absent
+- transition guarded by a conditional updateMany on status === PENDING_PAYMENT,
+  so concurrent retries race on the row lock and exactly one wins
+- stock decremented conditionally (stockLevel >= qty) so two orders racing for
+  the last unit cannot drive it negative. A shortfall is recorded but does NOT
+  block fulfilment: the money is captured, and refusing would be the worse
+  outcome
+- only payment_intent.succeeded fulfils. payment_intent.payment_failed is also
+  handled, and deliberately only CANCELS — without it, abandoned checkouts sit
+  in PENDING_PAYMENT forever. It cannot cause a double fulfilment.
 
-Measured against that: it stores measurements only. No skin tone, no hair,
-because this column outlives the account it came from — and erasure now scrubs
-it. Tax law requires the transaction, not the customer's waist.
+create-intent is authorised, which the spec omitted
 
-FIX: sign-in was broken and shipped that way
+{ orderId } with no ownership check means any signed-in shopper can attach a
+payment intent to someone else's order, and since ids are enumerable, read their
+basket and total. The order must belong to the session, or the caller must
+present the one-time checkoutToken minted at creation (guests have no session to
+check against). Both failures return 404, because distinguishing "not yours"
+from "does not exist" is itself the leak.
 
-Configured with session.strategy "database" and the Credentials provider.
-Auth.js refuses that pairing outright (@auth/core/lib/utils/assert.js:
-"Signing in with credentials only supported if JWT strategy is enabled").
+The amount always comes from the persisted Order.totalLocal. A client-supplied
+amount is a client-supplied price.
 
-The config parsed, tsc passed, the build passed, and every login failed at
-runtime. Nothing in the toolchain could have caught it.
+Consolidated toMinorUnits
 
-Now JWT, with the revocation that database sessions would have given us
-recovered via User.sessionVersion: the session callback re-reads the user on
-every request and drops the session if the account is gone or the version
-moved. So erasure still signs the shopper out immediately rather than at token
-expiry, which was the actual requirement.
+payments.ts already had toMinorUnits(amount, zeroDecimal: boolean), and I wrote
+a second one taking a currency code. That boolean is the trap: pass false for a
+JPY order and you charge 100x. The code is always in hand at the call site, so
+the boolean version is deleted and callers updated. Also covers the display path,
+which was using the provider's zeroDecimal flag as if it were a property of the
+money.
 
-SESSION_STRATEGY is a named constant with a test, so this cannot silently
-regress again. Verified UnsupportedStrategy occurrences in the runtime log went
-5 -> 0.
+Also fixed while verifying: create-intent and the legacy webhook both 500'd on
+an unreachable database instead of degrading to 503, and the legacy webhook
+validated status only after touching the DB — so order.status_changed with
+status PAID was reachable. Validation now runs before any DB work.
 
-Also: preflight DB reads are now inside the error boundary, so an unreachable
-database returns 503 instead of an unhandled 500 leaking a Prisma stack trace.
+Verified live: forged stripe signature -> 400, missing signature -> 400,
+order.created and order.paid on the legacy endpoint -> 410, status PAID via
+order.status_changed -> 400, unauthenticated create-intent -> 503.
 
-64 tests (was 58), tsc clean, 20 routes build clean.
+71 tests (was 64), tsc clean, 22 routes build clean.

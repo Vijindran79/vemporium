@@ -381,6 +381,8 @@ model Order {
   guestEmail String?
 
   status             OrderStatus @default(PENDING_PAYMENT)
+  /// Set once, by the Stripe webhook, inside the guarded transition.
+  paidAt             DateTime?
   currency           String // local currency actually charged
   fxRateAtOrder      Decimal @db.Decimal(12, 6)
   subtotalLocal      Decimal @db.Decimal(12, 2)
@@ -401,6 +403,17 @@ model Order {
   // instead of creating a second one.
   idempotencyKey String? @unique
 
+  /// SHA-256 of the one-time checkout capability token, returned to the client
+  /// once at order creation.
+  ///
+  /// Exists because guest checkout has no session to authorise against. Without
+  /// it, anyone could POST an orderId to /checkout/create-intent and pay for —
+  /// or enumerate — somebody else's basket, since order ids are guessable UUIDs.
+  /// Hashed so a database leak does not hand out the ability to act on open
+  /// orders. High-entropy random input, so SHA-256 rather than bcrypt is the
+  /// right KDF here.
+  checkoutTokenHash String? @unique
+
   /// Immutable fitting snapshot.
   ///
   /// A foreign key to AvatarProfile is NOT enough: the shopper edits their
@@ -414,6 +427,8 @@ model Order {
   fittingSnapshot Json?
 
   items     OrderItem[]
+  /// Outbound supplier notifications, written inside the paid transition.
+  dispatches DispatchOutbox[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -445,4 +460,37 @@ model WebhookEvent {
   processedAt     DateTime @default(now())
 
   @@index([type])
+}
+
+/// Transactional outbox for supplier notifications.
+///
+/// Why this table exists: the obvious implementation sends the WhatsApp inside
+/// the same transaction that marks the order PAID. That is wrong in both
+/// directions — if the transaction rolls back after the send, a karigah has been
+/// told to start work on an order that does not exist; if the send fails after
+/// commit, the customer has paid and the workshop was never told.
+///
+/// So the transaction only records INTENT, and the message goes out afterwards.
+/// If dispatch fails the row stays PENDING/FAILED and a retry sweep picks it up.
+/// The order is never rolled back because a messaging provider was down.
+model DispatchOutbox {
+  id       String @id @default(uuid()) @db.Uuid
+  orderId  String @db.Uuid
+  order    Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  /// ORDER_ALERT (prepare this paid order) or REORDER_PO (bulk replenishment).
+  kind String
+
+  /// Built and frozen at enqueue time. A later product rename must not change
+  /// what the supplier was actually asked to make.
+  payload Json
+
+  status     String    @default("PENDING") // PENDING | SENT | FAILED
+  attempts   Int       @default(0)
+  lastError  String?
+  createdAt  DateTime  @default(now())
+  sentAt     DateTime?
+
+  @@index([status])
+  @@index([orderId])
 }

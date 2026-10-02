@@ -378,6 +378,50 @@ Without a `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` the payment step renders an
 explicit "payments not configured" panel instead of failing silently, and the
 order is left `PENDING_PAYMENT` rather than marked paid.
 
+### Dispatch outbox worker
+
+`POST`-committed orders stage a `DispatchOutbox` row per supplier. Delivery runs
+in two places that share one outcome function (`src/lib/outbox.ts`), so they
+cannot drift:
+
+- `drainOutbox(orderId)` — immediately after the payment commits
+- `processOutboxBatch()` — `GET /api/cron/process-outbox`, every 5 minutes
+  (`vercel.json`)
+
+```
+PENDING --claim--> PROCESSING --ok------> SENT
+                       |
+                       +--fail, attempts < 5 --> PENDING (nextAttemptAt = backoff)
+                       |
+                       +--fail, attempts = 5 --> DEAD
+```
+
+Four decisions worth knowing:
+
+- **The claim is a conditional `updateMany` on `status: 'PENDING'`.** Without the
+  status guard in the `where`, two workers send the same supplier message.
+- **`PROCESSING` rows carry `lockedAt`, and stale ones are reclaimed.** A worker
+  that crashes mid-flight cannot release its own lock, so any `PROCESSING` row
+  older than 5 minutes returns to `PENDING`. This is the single most common way a
+  job queue silently dies — one crash strands paid orders forever.
+- **Backoff doubles from 1 minute and is capped at 1 hour.** Uncapped doubling is
+  arithmetically correct and commercially useless here: an order alert scheduled
+  for 3am reaches a karigah who has stopped looking at WhatsApp for the day. The
+  whole 5-attempt budget spans ~15 minutes.
+- **`FAILED` is not a resting state.** Rows end up `SENT` or `DEAD`, so "dead"
+  and "retryable" are never confused. `DEAD` counts are logged loudly — a
+  growing pile means paid orders whose workshops were never told.
+
+The cron endpoint **requires** `Authorization: Bearer $CRON_SECRET`, compared in
+constant time, and fails **closed** in production when the secret is absent. An
+unprotected worker lets anyone who learns the URL send WhatsApp messages from our
+account to our suppliers, and can drive the queue into a state where real orders
+never send.
+
+Delivery is **at-least-once**: reclaiming a stuck row may re-send a message a
+slow worker already sent. That is the deliberate trade — a rare duplicate
+"prepare these 3 garments" is far cheaper than an order nobody is told about.
+
 ## Configuration
 
 Every integration is optional in development — see `.env.example`.

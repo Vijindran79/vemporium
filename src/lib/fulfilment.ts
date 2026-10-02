@@ -30,7 +30,8 @@
 
 import type { Prisma } from '@prisma/client';
 import { prisma } from './db';
-import { dispatchOrderAlert, confirmationDeadline, type OrderAlertPayload } from './dispatch';
+import { confirmationDeadline, type OrderAlertPayload } from './dispatch';
+import { drainOutbox } from './outbox';
 
 export type FulfilmentOutcome =
   | { status: 'fulfilled'; orderId: string; reference: string; stockShortfalls: string[]; alertsQueued: number }
@@ -130,7 +131,8 @@ export async function markPaidAndFulfil(matchStripeIntentId: string): Promise<Fu
 
   // --- After commit ---------------------------------------------------------
   // Only now, with the transaction committed, is it safe to tell a human being
-  // to start sewing.
+  // to start sewing. Failure here is not fatal: the row stays PENDING and the
+  // outbox worker retries with backoff.
   if (result.outcome.status === 'fulfilled') {
     await drainOutbox(result.outcome.orderId);
   }
@@ -192,56 +194,6 @@ async function buildAlertPlans(
   }
 
   return [...bySupplier.values()];
-}
-
-/**
- * Sends every PENDING/FAILED outbox row for an order. Safe to call repeatedly —
- * SENT rows are skipped.
- *
- * Deliberately does NOT retry inline until the provider recovers: holding the
- * webhook response open past Stripe's timeout means Stripe redelivers anyway,
- * and we would be blocking a paid customer on Twilio's uptime.
- */
-export async function drainOutbox(orderId: string): Promise<{ sent: number; failed: number }> {
-  const rows = await prisma.dispatchOutbox.findMany({
-    where: { orderId, status: { in: ['PENDING', 'FAILED'] } },
-    orderBy: { createdAt: 'asc' },
-  });
-
-  let sent = 0;
-  let failed = 0;
-
-  for (const row of rows) {
-    try {
-      const results = await dispatchOrderAlert(row.payload as unknown as OrderAlertPayload);
-      const ok = results.some((r) => r.ok);
-      await prisma.dispatchOutbox.update({
-        where: { id: row.id },
-        data: {
-          status: ok ? 'SENT' : 'FAILED',
-          sentAt: ok ? new Date() : null,
-          attempts: { increment: 1 },
-          lastError: ok ? null : results.map((r) => r.detail).join('; ').slice(0, 500),
-        },
-      });
-      if (ok) sent += 1;
-      else failed += 1;
-    } catch (err) {
-      // dispatchOrderAlert is already non-throwing; this keeps the outbox row
-      // alive no matter what goes wrong above.
-      await prisma.dispatchOutbox.update({
-        where: { id: row.id },
-        data: {
-          status: 'FAILED',
-          attempts: { increment: 1 },
-          lastError: String(err).slice(0, 500),
-        },
-      });
-      failed += 1;
-    }
-  }
-
-  return { sent, failed };
 }
 
 /**

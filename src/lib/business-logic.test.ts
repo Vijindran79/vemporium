@@ -35,6 +35,7 @@ import { clampBodyParams, BODY_LIMITS } from './sizing.ts';
 import { toMinorUnits, stripeCurrencyCode, minimumChargeMinorUnits } from './currency.ts';
 import { newCheckoutToken, hashCheckoutToken, checkoutTokenMatches } from './checkout-token.ts';
 import { orderAccessWhere, checkoutTokenFromRequest } from './order-access.ts';
+import { retryDelayMs, nextAttemptAt, isTerminal, MAX_ATTEMPTS, LOCK_TIMEOUT_MS } from './outbox.ts';
 import { cmToIn, inchToCm, kgToLb, lbToKg, toFeetInches, formatLength } from './units.ts';
 
 const sku = (over: Partial<SkuState> = {}): SkuState => ({
@@ -650,6 +651,54 @@ test('the checkout token header is bounded and never read from the URL', () => {
     headers: { 'x-checkout-token': 'x'.repeat(5000) },
   });
   assert.equal(checkoutTokenFromRequest(tooLong), null, 'an oversized token is refused, not hashed');
+});
+
+// --- outbox retry policy --------------------------------------------------
+
+test('retry backoff doubles but stays capped', () => {
+  assert.equal(retryDelayMs(0), 60_000, 'first retry after one minute');
+  assert.equal(retryDelayMs(1), 120_000);
+  assert.equal(retryDelayMs(2), 240_000);
+  assert.equal(retryDelayMs(3), 480_000);
+
+  // Capped. These are order alerts to a workshop: an attempt scheduled for
+  // 3am is arithmetically valid and commercially pointless.
+  assert.equal(retryDelayMs(10), 3_600_000);
+  assert.equal(retryDelayMs(99), 3_600_000);
+});
+
+test('retry backoff never goes negative or NaN', () => {
+  // attempts comes off an Int column, so these cannot occur in practice — but a
+  // bad value must not produce a nextAttemptAt in the PAST, which would make
+  // the worker hot-loop on the same row.
+  assert.equal(retryDelayMs(-5), 60_000, 'a negative count is treated as a first attempt');
+  assert.equal(retryDelayMs(0.5), 60_000, 'a fractional count floors rather than yielding a fractional delay');
+  assert.ok(Number.isInteger(retryDelayMs(0.5)), 'never a fractional delay');
+  assert.equal(retryDelayMs(Number.NaN), 60_000);
+});
+
+test('nextAttemptAt moves strictly forward from the failure time', () => {
+  const failed = new Date('2026-03-01T12:00:00.000Z');
+  const next = nextAttemptAt(0, failed);
+  assert.ok(next.getTime() > failed.getTime(), 'a retry must be in the future');
+  assert.equal(next.toISOString(), '2026-03-01T12:01:00.000Z');
+});
+
+test('terminal statuses are the ones a worker must never re-send', () => {
+  assert.ok(isTerminal('SENT'));
+  assert.ok(isTerminal('DEAD'));
+  // PROCESSING is NOT terminal: it is a live lock, and treating it as finished
+  // would drop a message a worker is still holding.
+  assert.ok(!isTerminal('PROCESSING'));
+  assert.ok(!isTerminal('PENDING'));
+});
+
+test('the retry budget is bounded so nothing loops forever', () => {
+  assert.equal(MAX_ATTEMPTS, 5);
+  // Worst case total wait across the whole budget: 1+2+4+8 = 15 minutes.
+  const total = [0, 1, 2, 3].reduce((sum, a) => sum + retryDelayMs(a), 0);
+  assert.equal(total, 15 * 60_000, 'a failed alert is retried for ~15 minutes before going DEAD');
+  assert.ok(LOCK_TIMEOUT_MS > retryDelayMs(0), 'a lock must outlive one retry interval');
 });
 
 // --- fitting snapshot -----------------------------------------------------

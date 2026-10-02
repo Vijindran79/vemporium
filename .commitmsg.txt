@@ -1,52 +1,43 @@
-Stripe Elements + confirmation screen
+Dispatch outbox worker
 
-PaymentElement mounts on a fourth checkout step, rendering whatever methods
-Stripe enables for the intent. confirmPayment uses redirect: 'if_required', so a
-card settles in place with no navigation; redirect methods still leave for the
-provider and come back to /orders/[id]/confirmation.
+Closes the fulfilment loop: a paid order whose WhatsApp failed is a customer who
+paid for something nobody is making. Module 2 improves conversion; this stops
+losing orders, so it went first.
 
-The confirmation screen polls because it has to. The shopper usually arrives
-BEFORE the webhook has run — Stripe redirects the instant payment succeeds and
-the signed webhook is a separate request seconds behind. PENDING_PAYMENT on
-arrival is the normal case for a successful payment, so it renders as "payment
-processing, this page updates itself" rather than an error. Backoff, stops on
-terminal status, hard stop at the cap so a backgrounded tab stops hammering the
-API. Polling over SSE/WebSockets because this is a serverless deployment and a
-long-lived connection is a poor trade for one status field.
+- GET /api/cron/process-outbox on a 5-minute Vercel cron, plus vercel.json
+- the claim is a conditional updateMany on status = PENDING. Without the status
+  guard in the where, two workers send the same supplier message
+- PROCESSING rows carry lockedAt and workerId, and anything older than 5 minutes
+  is reclaimed. A worker that crashes mid-flight cannot release its own lock, so
+  without this one crash strands paid orders in PROCESSING forever — the most
+  common way a job queue silently dies
+- backoff doubles from 1 minute, capped at 1 hour. Uncapped doubling is
+  arithmetically correct and commercially useless: an order alert scheduled for
+  3am reaches a karigah who has stopped looking at WhatsApp. The whole 5-attempt
+  budget spans ~15 minutes, so it is worth capping at all
+- FAILED is deliberately not a resting state. Rows end SENT or DEAD, so "dead"
+  and "retryable" are never confused, and DEAD counts are logged loudly
+- a POST /reclaim variant that recovers stranded rows WITHOUT sending, so an
+  operator can inspect after a crash without also re-sending everything
 
-The checkout token is NOT in the URL
+drainOutbox moved out of fulfilment.ts into lib/outbox.ts so the immediate
+post-commit drain and the retry worker share one recordOutcome(). Two
+implementations of "what happens after a send attempt" will drift, and drift here
+means an order that silently never reaches its workshop.
 
-The spec had return_url pointing at ?token=[checkoutToken]. Undone deliberately:
-return_url carries only the order id, the token lives in sessionStorage, and it
-travels as an x-checkout-token header. A bearer credential in a query string
-lands in browser history, in the Referer header sent to every third-party script
-on the confirmation page, in access logs and in analytics. sessionStorage is also
-tab-scoped and self-clearing, which suits a credential that authorises exactly
-one checkout attempt.
+The cron endpoint requires Authorization: Bearer $CRON_SECRET, constant-time
+compare, and fails CLOSED in production when the secret is missing — unlike the
+legacy internal webhook which degrades open in dev. An unprotected worker lets
+anyone with the URL send WhatsApp from our Twilio account to our suppliers, and
+can drive the queue into a state where real orders never send.
 
-One authorisation rule for two endpoints
+A test caught a real bug while writing this: retryDelayMs(NaN) returned NaN,
+because Math.max(0, NaN) is NaN and Math.min does not catch it. That becomes an
+Invalid Date in nextAttemptAt, which Prisma rejects, taking down the whole
+worker pass. Fixed by guarding the input rather than the result.
 
-orderAccessWhere() returns a Prisma `where` predicate rather than doing a fetch,
-so the security rule is unit tested without a database — it is a boundary, not an
-integration detail. /api/checkout/create-intent and the new GET /api/orders/[id]
-both use it, so "can I pay for this order" and "can I look at this order" cannot
-drift apart. A session takes precedence over a token, so a signed-in shopper
-presenting someone else's token is still scoped to their own orders. create-intent
-no longer accepts a token in the request body at all.
+Verified live: no auth header -> 401, wrong secret -> 401, correct secret -> 500
+from the unreachable database (not 401), with PrismaClientInitializationError and
+no code errors in the log.
 
-Degrades honestly without configuration: no NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
-renders an explicit "payments not configured" panel, and the order is left
-PENDING_PAYMENT rather than marked paid.
-
-Two SDK mismatches worth recording: this version's Elements has no onReady prop
-and types elements.on only for 'update-end', so PaymentElement readiness uses a
-narrow documented cast. And money() from MoneyProvider takes a USD base and
-re-converts — wrong for stored order totals, and wrong when the shopper's current
-market differs from the order's currency, so the confirmation screen formats via
-formatMoney(amount, orderCurrency) instead.
-
-Verified live: confirmation page 200, /api/orders/[id] and create-intent both
-503 when the database is down rather than 500ing, checkout renders without a
-publishable key, and a body-supplied checkoutToken is ignored.
-
-76 tests (was 71), tsc clean, 25 routes build clean.
+81 tests (was 76), tsc clean, 26 routes build clean.

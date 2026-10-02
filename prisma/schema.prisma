@@ -485,12 +485,33 @@ model DispatchOutbox {
   /// what the supplier was actually asked to make.
   payload Json
 
-  status     String    @default("PENDING") // PENDING | SENT | FAILED
-  attempts   Int       @default(0)
-  lastError  String?
-  createdAt  DateTime  @default(now())
-  sentAt     DateTime?
+  /// PENDING -> PROCESSING -> SENT | DEAD, with PENDING again between retries.
+  /// FAILED is deliberately NOT a resting state: "failed" reads as terminal but
+  /// these rows are retried, and a queue where you cannot tell dead from
+  /// retryable is a queue nobody trusts.
+  status String @default("PENDING")
 
-  @@index([status])
+  attempts Int @default(0)
+
+  /// Earliest time this row may be claimed. Set to now() on enqueue, then pushed
+  /// out by the backoff on each failure.
+  nextAttemptAt DateTime @default(now())
+
+  /// When a worker claimed this row, and which worker.
+  ///
+  /// Without these, a worker that crashes mid-flight leaves rows stuck in
+  /// PROCESSING forever — the classic orphaned-lock bug. Any PROCESSING row
+  /// whose lockedAt is older than the lock timeout is reclaimed by the next
+  /// worker, because a process that is not running cannot release its own lock.
+  lockedAt DateTime?
+  workerId String?
+
+  lastError String?
+  createdAt DateTime @default(now())
+  sentAt    DateTime?
+
+  /// Partial index: the worker's hot query is PENDING rows that are due. Indexing
+  /// every status would bloat the write path for no benefit.
+  @@index([status, nextAttemptAt])
   @@index([orderId])
 }

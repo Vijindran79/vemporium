@@ -27,6 +27,7 @@ import { prisma } from '@/lib/db';
 import { auth } from '@/lib/auth';
 import { stripeClient, stripeConfigured } from '@/lib/stripe';
 import { hashCheckoutToken } from '@/lib/checkout-token';
+import { orderAccessWhere, checkoutTokenFromRequest } from '@/lib/order-access';
 import { isCurrencyCode, minimumChargeMinorUnits, stripeCurrencyCode, toMinorUnits } from '@/lib/currency';
 
 export const runtime = 'nodejs';
@@ -34,7 +35,6 @@ export const dynamic = 'force-dynamic';
 
 interface CreateIntentRequest {
   orderId?: string;
-  checkoutToken?: string;
 }
 
 const MAX_IDEMPOTENCY_KEY_LEN = 128;
@@ -53,24 +53,14 @@ export async function POST(request: Request) {
 
   const session = await auth();
   const userId = session?.user?.id ?? null;
-  const token = typeof body.checkoutToken === 'string' ? body.checkoutToken : '';
+  const token = checkoutTokenFromRequest(request);
 
-  // Authorisation lives in the `where`, so an unauthorised caller simply does
-  // not match a row. There is nothing to leak.
-  //
-  // Wrapped so an unreachable database returns a retryable 503 rather than an
-  // unhandled 500 leaking a Prisma stack trace to a shopper at checkout.
+  // The authorisation predicate lives in lib/order-access so this endpoint and
+  // GET /api/orders/[id] cannot drift apart.
   let order;
   try {
     order = await prisma.order.findFirst({
-      where: {
-        id: orderId,
-        ...(userId
-          ? { userId }
-          : token
-            ? { checkoutTokenHash: hashCheckoutToken(token) }
-            : { id: '__no_authorisation__' }),
-      },
+      where: orderAccessWhere(orderId, userId, token),
       select: {
         id: true,
         reference: true,

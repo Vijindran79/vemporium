@@ -328,6 +328,56 @@ path was **deleted**, not merely discouraged:
 
 ---
 
+### Stripe Elements
+
+Checkout is a four-step flow — delivery → method → review → pay. The last step
+mounts `<PaymentElement/>`, which renders whatever methods Stripe has enabled for
+the intent (cards, KakaoPay, Klarna, wallets) localised to the shopper. We pass a
+client secret and let Stripe decide; we do not maintain that list.
+
+`stripe.confirmPayment()` uses `redirect: 'if_required'`, so a **card** payment
+settles in place with no navigation and the result renders directly. Redirect
+methods still leave for the provider and return to
+`/orders/[id]/confirmation`.
+
+**The confirmation screen polls, and it has to.** The shopper usually arrives
+*before* our webhook has run: Stripe redirects the instant payment succeeds, and
+the signed webhook is a separate request that may be seconds behind. So
+`PENDING_PAYMENT` on arrival is the **normal** case for a successful payment, not
+a failure, and the screen says so instead of showing an error. Polling uses a
+backoff, stops on a terminal status, and always stops at the cap.
+
+Polling rather than WebSockets/SSE: this is a serverless deployment, where
+long-lived connections are expensive to hold open for one status field.
+
+### The checkout token never goes in a URL
+
+The spec for the confirmation route was `return_url` pointing at
+`?token=[checkoutToken]`. That is undone on purpose:
+
+- `confirmParams.return_url` carries only `/orders/[id]/confirmation`
+- the token is held in `sessionStorage` and sent as an `x-checkout-token` **header**
+- authorisation reads the header only; a `token` query parameter is ignored
+
+A bearer credential in a query string ends up in browser history, in the
+`Referer` header sent to every third-party script on the page, in access logs and
+in analytics. `sessionStorage` is tab-scoped and self-clearing, which also suits
+a credential that authorises exactly one checkout attempt.
+
+### One authorisation rule, two endpoints
+
+`src/lib/order-access.ts` exports `orderAccessWhere()` — a Prisma `where`
+predicate, not a fetch helper, so the rule can be unit tested without a database.
+Both `/api/checkout/create-intent` and `/api/orders/[id]` use it, so "can I pay
+for this order" and "can I look at this order" cannot drift apart.
+
+A signed-in session takes precedence over a token, so a signed-in shopper
+presenting someone else's token is still scoped to their own orders.
+
+Without a `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` the payment step renders an
+explicit "payments not configured" panel instead of failing silently, and the
+order is left `PENDING_PAYMENT` rather than marked paid.
+
 ## Configuration
 
 Every integration is optional in development — see `.env.example`.

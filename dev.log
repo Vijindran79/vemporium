@@ -1,0 +1,101 @@
+
+> vemporium@0.1.0 dev
+> next dev
+
+   Ôû▓ Next.js 15.5.27
+   - Local:        http://localhost:3000
+   - Network:      http://192.168.0.192:3000
+   - Environments: .env
+
+ Ô£ô Starting...
+ Ô£ô Ready in 10.5s
+ Ôùï Compiling /orders/[id]/confirmation ...
+ Ô£ô Compiled /orders/[id]/confirmation in 7.7s (653 modules)
+(node:29424) ExperimentalWarning: localStorage is not available because --localstorage-file was not provided.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ GET /orders/00000000-0000-0000-0000-000000000000/confirmation 200 in 10705ms
+ Ôùï Compiling /api/orders/[id] ...
+ Ô£ô Compiled /api/orders/[id] in 1530ms (787 modules)
+prisma:error 
+Invalid `prisma.order.findFirst()` invocation:
+
+
+Can't reach database server at `localhost:5432`
+
+Please make sure your database server is running at `localhost:5432`.
+[orders] could not load order Error [PrismaClientInitializationError]: 
+Invalid `prisma.order.findFirst()` invocation:
+
+
+Can't reach database server at `localhost:5432`
+
+Please make sure your database server is running at `localhost:5432`.
+    at async GET (src\app\api\orders\[id]\route.ts:36:13)
+  34 |   let order;
+  35 |   try {
+> 36 |     order = await prisma.order.findFirst({
+     |             ^
+  37 |       where: orderAccessWhere(id, userId, token),
+  38 |       select: {
+  39 |         id: true, {
+  clientVersion: '5.22.0',
+  errorCode: undefined
+}
+ GET /api/orders/00000000-0000-0000-0000-000000000000 503 in 7875ms
+ Ôùï Compiling /api/checkout/create-intent ...
+ Ô£ô Compiled /api/checkout/create-intent in 793ms (978 modules)
+prisma:error 
+Invalid `prisma.order.findFirst()` invocation:
+
+
+Can't reach database server at `localhost:5432`
+
+Please make sure your database server is running at `localhost:5432`.
+[stripe] could not load order Error [PrismaClientInitializationError]: 
+Invalid `prisma.order.findFirst()` invocation:
+
+
+Can't reach database server at `localhost:5432`
+
+Please make sure your database server is running at `localhost:5432`.
+    at async POST (src\app\api\checkout\create-intent\route.ts:62:13)
+  60 |   let order;
+  61 |   try {
+> 62 |     order = await prisma.order.findFirst({
+     |             ^
+  63 |       where: orderAccessWhere(orderId, userId, token),
+  64 |       select: {
+  65 |         id: true, {
+  clientVersion: '5.22.0',
+  errorCode: undefined
+}
+ POST /api/checkout/create-intent 503 in 5309ms
+ Ôùï Compiling /checkout ...
+ Ô£ô Compiled /checkout in 1060ms (1012 modules)
+ GET /checkout 200 in 1946ms
+prisma:error 
+Invalid `prisma.order.findFirst()` invocation:
+
+
+Can't reach database server at `localhost:5432`
+
+Please make sure your database server is running at `localhost:5432`.
+[stripe] could not load order Error [PrismaClientInitializationError]: 
+Invalid `prisma.order.findFirst()` invocation:
+
+
+Can't reach database server at `localhost:5432`
+
+Please make sure your database server is running at `localhost:5432`.
+    at async POST (src\app\api\checkout\create-intent\route.ts:62:13)
+  60 |   let order;
+  61 |   try {
+> 62 |     order = await prisma.order.findFirst({
+     |             ^
+  63 |       where: orderAccessWhere(orderId, userId, token),
+  64 |       select: {
+  65 |         id: true, {
+  clientVersion: '5.22.0',
+  errorCode: undefined
+}
+ POST /api/checkout/create-intent 503 in 4330ms

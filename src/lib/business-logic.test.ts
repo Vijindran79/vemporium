@@ -34,6 +34,7 @@ import { buildFittingSnapshot, isFittingSnapshot } from './fitting-snapshot.ts';
 import { clampBodyParams, BODY_LIMITS } from './sizing.ts';
 import { toMinorUnits, stripeCurrencyCode, minimumChargeMinorUnits } from './currency.ts';
 import { newCheckoutToken, hashCheckoutToken, checkoutTokenMatches } from './checkout-token.ts';
+import { orderAccessWhere, checkoutTokenFromRequest } from './order-access.ts';
 import { cmToIn, inchToCm, kgToLb, lbToKg, toFeetInches, formatLength } from './units.ts';
 
 const sku = (over: Partial<SkuState> = {}): SkuState => ({
@@ -601,6 +602,54 @@ test('a checkout token is high entropy and stored only as a hash', () => {
   const seen = new Set<string>();
   for (let i = 0; i < 500; i += 1) seen.add(newCheckoutToken());
   assert.equal(seen.size, 500, 'token generation collided');
+});
+
+// --- order authorisation --------------------------------------------------
+
+test('a caller with no session and no token cannot match any order', () => {
+  // The deny-all case. If this ever stops being unmatchable, every endpoint
+  // using it becomes an open read of any order by id.
+  const where = orderAccessWhere('order-1', null, null) as { id: string; AND?: { id: string }[] };
+  assert.equal(where.id, 'order-1');
+  assert.ok(Array.isArray(where.AND), 'must carry a second, unsatisfiable constraint');
+  assert.notEqual(where.AND![0].id, 'order-1', 'the deny constraint must contradict the id');
+});
+
+test('a signed-in caller is scoped to their own orders', () => {
+  const where = orderAccessWhere('order-1', 'user-abc', null) as { id: string; userId: string };
+  assert.equal(where.userId, 'user-abc', 'ownership must be part of the predicate');
+  assert.ok(!('checkoutTokenHash' in where), 'a session must not fall back to the token path');
+});
+
+test('a guest must present the token, matched by hash', () => {
+  const token = newCheckoutToken();
+  const where = orderAccessWhere('order-1', null, token) as { checkoutTokenHash: string };
+  // The RAW token must never reach the query — only its hash.
+  assert.equal(where.checkoutTokenHash, hashCheckoutToken(token));
+  assert.notEqual(where.checkoutTokenHash, token);
+});
+
+test('a session takes precedence over a token', () => {
+  // A signed-in shopper presenting someone else's token must still be scoped to
+  // their OWN orders, not the token's. Otherwise the token overrides the
+  // stronger proof we already hold.
+  const where = orderAccessWhere('order-1', 'user-abc', 'stolen-token') as Record<string, unknown>;
+  assert.equal(where.userId, 'user-abc');
+  assert.ok(!('checkoutTokenHash' in where));
+});
+
+test('the checkout token header is bounded and never read from the URL', () => {
+  const req = new Request('https://example.test/api/orders/1?token=leaked', {
+    headers: { 'x-checkout-token': '  abc123  ' },
+  });
+  assert.equal(checkoutTokenFromRequest(req), 'abc123', 'header is trimmed');
+
+  assert.equal(checkoutTokenFromRequest(new Request('https://example.test/?token=leaked')), null);
+
+  const tooLong = new Request('https://example.test/', {
+    headers: { 'x-checkout-token': 'x'.repeat(5000) },
+  });
+  assert.equal(checkoutTokenFromRequest(tooLong), null, 'an oversized token is refused, not hashed');
 });
 
 // --- fitting snapshot -----------------------------------------------------

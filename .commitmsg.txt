@@ -1,60 +1,52 @@
-Stripe capture: one path to PAID, notifications out of the transaction
+Stripe Elements + confirmation screen
 
-The state machine in the spec is right, but step 4 — dispatching supplier
-WhatsApp alerts inside prisma.$transaction — is wrong in both directions:
+PaymentElement mounts on a fourth checkout step, rendering whatever methods
+Stripe enables for the intent. confirmPayment uses redirect: 'if_required', so a
+card settles in place with no navigation; redirect methods still leave for the
+provider and come back to /orders/[id]/confirmation.
 
-  - send, then roll back -> a karigah has been told to start work on an order
-    that does not exist
-  - commit, then the send fails -> the customer paid and nobody told the
-    workshop, so the order rots in PENDING_PAYMENT forever
+The confirmation screen polls because it has to. The shopper usually arrives
+BEFORE the webhook has run — Stripe redirects the instant payment succeeds and
+the signed webhook is a separate request seconds behind. PENDING_PAYMENT on
+arrival is the normal case for a successful payment, so it renders as "payment
+processing, this page updates itself" rather than an error. Backoff, stops on
+terminal status, hard stop at the cap so a backgrounded tab stops hammering the
+API. Polling over SSE/WebSockets because this is a serverless deployment and a
+long-lived connection is a poor trade for one status field.
 
-Neither recovers automatically. So the transaction records INTENT (status,
-stock, a DispatchOutbox row) and returns; messages go out afterwards. A failed
-dispatch leaves the row FAILED for a retry sweep and never un-pays an order.
-The trade is deliberate: at-least-once notification in exchange for never
-telling a supplier about a rolled-back order.
+The checkout token is NOT in the URL
 
-- Stripe webhook: raw body, signature verified before parsing, no dev-mode
-  bypass. An unauthenticated payment webhook is a free order-press, so unlike
-  the legacy internal one it refuses everything when the secret is absent
-- transition guarded by a conditional updateMany on status === PENDING_PAYMENT,
-  so concurrent retries race on the row lock and exactly one wins
-- stock decremented conditionally (stockLevel >= qty) so two orders racing for
-  the last unit cannot drive it negative. A shortfall is recorded but does NOT
-  block fulfilment: the money is captured, and refusing would be the worse
-  outcome
-- only payment_intent.succeeded fulfils. payment_intent.payment_failed is also
-  handled, and deliberately only CANCELS — without it, abandoned checkouts sit
-  in PENDING_PAYMENT forever. It cannot cause a double fulfilment.
+The spec had return_url pointing at ?token=[checkoutToken]. Undone deliberately:
+return_url carries only the order id, the token lives in sessionStorage, and it
+travels as an x-checkout-token header. A bearer credential in a query string
+lands in browser history, in the Referer header sent to every third-party script
+on the confirmation page, in access logs and in analytics. sessionStorage is also
+tab-scoped and self-clearing, which suits a credential that authorises exactly
+one checkout attempt.
 
-create-intent is authorised, which the spec omitted
+One authorisation rule for two endpoints
 
-{ orderId } with no ownership check means any signed-in shopper can attach a
-payment intent to someone else's order, and since ids are enumerable, read their
-basket and total. The order must belong to the session, or the caller must
-present the one-time checkoutToken minted at creation (guests have no session to
-check against). Both failures return 404, because distinguishing "not yours"
-from "does not exist" is itself the leak.
+orderAccessWhere() returns a Prisma `where` predicate rather than doing a fetch,
+so the security rule is unit tested without a database — it is a boundary, not an
+integration detail. /api/checkout/create-intent and the new GET /api/orders/[id]
+both use it, so "can I pay for this order" and "can I look at this order" cannot
+drift apart. A session takes precedence over a token, so a signed-in shopper
+presenting someone else's token is still scoped to their own orders. create-intent
+no longer accepts a token in the request body at all.
 
-The amount always comes from the persisted Order.totalLocal. A client-supplied
-amount is a client-supplied price.
+Degrades honestly without configuration: no NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
+renders an explicit "payments not configured" panel, and the order is left
+PENDING_PAYMENT rather than marked paid.
 
-Consolidated toMinorUnits
+Two SDK mismatches worth recording: this version's Elements has no onReady prop
+and types elements.on only for 'update-end', so PaymentElement readiness uses a
+narrow documented cast. And money() from MoneyProvider takes a USD base and
+re-converts — wrong for stored order totals, and wrong when the shopper's current
+market differs from the order's currency, so the confirmation screen formats via
+formatMoney(amount, orderCurrency) instead.
 
-payments.ts already had toMinorUnits(amount, zeroDecimal: boolean), and I wrote
-a second one taking a currency code. That boolean is the trap: pass false for a
-JPY order and you charge 100x. The code is always in hand at the call site, so
-the boolean version is deleted and callers updated. Also covers the display path,
-which was using the provider's zeroDecimal flag as if it were a property of the
-money.
+Verified live: confirmation page 200, /api/orders/[id] and create-intent both
+503 when the database is down rather than 500ing, checkout renders without a
+publishable key, and a body-supplied checkoutToken is ignored.
 
-Also fixed while verifying: create-intent and the legacy webhook both 500'd on
-an unreachable database instead of degrading to 503, and the legacy webhook
-validated status only after touching the DB — so order.status_changed with
-status PAID was reachable. Validation now runs before any DB work.
-
-Verified live: forged stripe signature -> 400, missing signature -> 400,
-order.created and order.paid on the legacy endpoint -> 410, status PAID via
-order.status_changed -> 400, unauthenticated create-intent -> 503.
-
-71 tests (was 64), tsc clean, 22 routes build clean.
+76 tests (was 71), tsc clean, 25 routes build clean.

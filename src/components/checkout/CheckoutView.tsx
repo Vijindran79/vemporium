@@ -12,7 +12,7 @@
  * worse lie than an honest demo order.
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { cartSubtotalUsd, useCartStore } from '@/store/cart-store';
 import { MARKET_COUNTRIES, useMarketStore } from '@/store/market-store';
@@ -20,8 +20,12 @@ import { useMoney } from '@/components/shell/MoneyProvider';
 import { calculateLandedCost } from '@/lib/duties';
 import { paymentMethodsFor } from '@/lib/payments';
 import { currencyForCountry, toMinorUnits, localeForCountry } from '@/lib/currency';
+import { storeCheckoutToken } from '@/lib/stripe-client';
+import { StripePaymentStep } from './StripePaymentStep';
 
-type Step = 'delivery' | 'payment' | 'review';
+type Step = 'delivery' | 'payment' | 'review' | 'pay';
+
+const STEPS: Step[] = ['delivery', 'payment', 'review', 'pay'];
 
 export function CheckoutView() {
   const lines = useCartStore((s) => s.lines);
@@ -37,6 +41,21 @@ export function CheckoutView() {
   const [placing, setPlacing] = useState(false);
   const [reference, setReference] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Set once the order exists and Stripe has a client secret for it.
+  const [payment, setPayment] = useState<{ orderId: string; clientSecret: string } | null>(null);
+
+  // One idempotency key per checkout ATTEMPT, stable across re-renders and
+  // retries. A ref rather than state: regenerating it on every render would make
+  // each click a new "attempt" and defeat the whole point.
+  const checkoutKeyRef = useRef<string | null>(null);
+  if (checkoutKeyRef.current === null) {
+    const rand =
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    checkoutKeyRef.current = `co_${rand}`;
+  }
+  const checkoutKey = checkoutKeyRef.current;
 
   const methods = useMemo(() => paymentMethodsFor(country), [country]);
   const subtotalUsd = useMemo(() => cartSubtotalUsd(lines), [lines]);
@@ -82,6 +101,15 @@ export function CheckoutView() {
     );
   }
 
+  /**
+   * Creates the order, then asks Stripe for a client secret.
+   *
+   * Deliberately two calls, not one. The order must exist and be linked to the
+   * session BEFORE a payment intent is created, so that when the webhook fires
+   * there is already an owned order to transition. Creating the intent first
+   * leaves a window where a customer has paid and we have nothing to attach the
+   * payment to.
+   */
   async function placeOrder() {
     setPlacing(true);
     setError(null);
@@ -98,11 +126,43 @@ export function CheckoutView() {
           amountMinor: minorUnits,
           email: form.email,
           shipping: form,
+          // Stable per checkout attempt, so a double-click cannot create two
+          // orders (and therefore two payment intents).
+          idempotencyKey: checkoutKey,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Could not place the order');
+
       setReference(data.reference);
+
+      // Held in sessionStorage for the confirmation screen. Never placed in a
+      // URL — it is a bearer credential for this basket.
+      if (data.checkoutToken) storeCheckoutToken(data.orderId, data.checkoutToken);
+
+      const intentRes = await fetch('/api/checkout/create-intent', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          // Sent as a header rather than in the body/query so it stays out of
+          // logs and Referer headers.
+          ...(data.checkoutToken ? { 'x-checkout-token': data.checkoutToken } : {}),
+        },
+        body: JSON.stringify({ orderId: data.orderId }),
+      });
+      const intent = await intentRes.json();
+      if (!intentRes.ok) {
+        // The order exists and is payable; only the form failed to load. Say so
+        // rather than implying the purchase failed — it may well be retried.
+        throw new Error(
+          intent.error
+            ? `Order ${data.reference} was created, but the payment form could not load: ${intent.error}`
+            : 'Order created, but the payment form could not load.',
+        );
+      }
+
+      setPayment({ orderId: data.orderId, clientSecret: intent.clientSecret });
+      setStep('pay');
       clear();
     } catch (e) {
       setError((e as Error).message);
@@ -117,7 +177,7 @@ export function CheckoutView() {
     <div className="grid gap-6 lg:grid-cols-[1.5fr_1fr]">
       <div className="card p-6">
         <ol className="mb-6 flex items-center gap-2 text-xs">
-          {(['delivery', 'payment', 'review'] as Step[]).map((s, i) => (
+          {STEPS.map((s, i) => (
             <li key={s} className="flex items-center gap-2">
               <span
                 className={`flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-semibold ${
@@ -127,7 +187,7 @@ export function CheckoutView() {
                 {i + 1}
               </span>
               <span className={step === s ? 'font-semibold text-maroon' : 'text-stone-500'}>{s}</span>
-              {i < 2 && <span className="mx-1 h-px w-6 bg-stone-300" />}
+              {i < STEPS.length - 1 && <span className="mx-1 h-px w-6 bg-stone-300" />}
             </li>
           ))}
         </ol>
@@ -228,9 +288,24 @@ export function CheckoutView() {
               </button>
             </div>
             <p className="text-[10px] leading-relaxed text-stone-400">
-              Demo checkout: no card is charged. The order is created so the webhook and supplier dispatch
-              pipeline can be exercised end to end.
+              The order is created and linked to your account before any payment is taken. If payment does not
+              complete, the order stays PENDING_PAYMENT and nothing is charged.
             </p>
+          </div>
+        )}
+
+        {step === 'pay' && payment && (
+          <div className="space-y-3">
+            <p className="text-sm text-stone-600">
+              Paying <strong className="text-stone-800">{money(landed.totalUsd)}</strong> for order{' '}
+              <span className="font-mono text-xs">{reference}</span>.
+            </p>
+            <StripePaymentStep
+              clientSecret={payment.clientSecret}
+              orderId={payment.orderId}
+              onComplete={() => setReference(reference)}
+              onBack={() => setStep('review')}
+            />
           </div>
         )}
       </div>

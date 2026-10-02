@@ -422,6 +422,35 @@ Delivery is **at-least-once**: reclaiming a stuck row may re-send a message a
 slow worker already sent. That is the deliberate trade — a rare duplicate
 "prepare these 3 garments" is far cheaper than an order nobody is told about.
 
+## Running the tests
+
+Two suites, and the distinction matters:
+
+| Command | Needs a database | Covers |
+| --- | --- | --- |
+| `npm test` | no | pure business logic — money, sizing, retry policy, auth predicates |
+| `npm run test:integration` | **yes** | everything that writes: auth, orders, the paid transition, the outbox worker, GDPR erasure |
+
+The unit suite is fast and runs anywhere. The integration suite is the one that
+catches real bugs — it is the only thing that has ever executed
+`markPaidAndFulfil`, and the only thing that can prove the webhook replay does
+**not** double-decrement stock.
+
+```bash
+docker run -d --name vemporium-pg \
+  -e POSTGRES_USER=vemporium -e POSTGRES_PASSWORD=vemporium \
+  -e POSTGRES_DB=vemporium -p 55432:5432 postgres:16-alpine
+
+$env:DATABASE_URL='postgresql://vemporium:vemporium@localhost:55432/vemporium?schema=public'
+npm run db:migrate      # prisma migrate dev — real migration history
+npm run db:seed
+npm run test:integration
+```
+
+Schema changes go through `prisma migrate dev`, never `prisma db push`. `db push`
+applies a schema without recording it, so there is no way to replay, audit or
+roll back a production change.
+
 ## Configuration
 
 Every integration is optional in development — see `.env.example`.

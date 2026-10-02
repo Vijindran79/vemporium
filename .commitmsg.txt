@@ -1,43 +1,55 @@
-Dispatch outbox worker
+Pay down the verification debt: real migrations + integration suite
 
-Closes the fulfilment loop: a paid order whose WhatsApp failed is a customer who
-paid for something nobody is making. Module 2 improves conversion; this stops
-losing orders, so it went first.
+Until now not one line of code that writes to a database had ever run. The
+entire standard of proof was "tsc passes and it 503s when Postgres is missing".
+That is how a broken sign-in shipped as working in an earlier round.
 
-- GET /api/cron/process-outbox on a 5-minute Vercel cron, plus vercel.json
-- the claim is a conditional updateMany on status = PENDING. Without the status
-  guard in the where, two workers send the same supplier message
-- PROCESSING rows carry lockedAt and workerId, and anything older than 5 minutes
-  is reclaimed. A worker that crashes mid-flight cannot release its own lock, so
-  without this one crash strands paid orders in PROCESSING forever — the most
-  common way a job queue silently dies
-- backoff doubles from 1 minute, capped at 1 hour. Uncapped doubling is
-  arithmetically correct and commercially useless: an order alert scheduled for
-  3am reaches a karigah who has stopped looking at WhatsApp. The whole 5-attempt
-  budget spans ~15 minutes, so it is worth capping at all
-- FAILED is deliberately not a resting state. Rows end SENT or DEAD, so "dead"
-  and "retryable" are never confused, and DEAD counts are logged loudly
-- a POST /reclaim variant that recovers stranded rows WITHOUT sending, so an
-  operator can inspect after a crash without also re-sending everything
+1. Real migration history (prisma migrate dev, not db push)
 
-drainOutbox moved out of fulfilment.ts into lib/outbox.ts so the immediate
-post-commit drain and the retry worker share one recordOutcome(). Two
-implementations of "what happens after a send attempt" will drift, and drift here
-means an order that silently never reaches its workshop.
+   prisma/migrations/20261002151840_init/migration.sql is now the baseline.
+   Verified against information_schema that sessionVersion, paidAt,
+   checkoutTokenHash, fittingSnapshot (jsonb) and every DispatchOutbox column
+   actually exist rather than merely appearing in the schema file.
 
-The cron endpoint requires Authorization: Bearer $CRON_SECRET, constant-time
-compare, and fails CLOSED in production when the secret is missing — unlike the
-legacy internal webhook which degrades open in dev. An unprotected worker lets
-anyone with the URL send WhatsApp from our Twilio account to our suppliers, and
-can drive the queue into a state where real orders never send.
+   db push applies a schema without recording it, so there was no way to replay,
+   audit or roll back any of it. db:migrate is the documented path now.
 
-A test caught a real bug while writing this: retryDelayMs(NaN) returned NaN,
-because Math.max(0, NaN) is NaN and Math.min does not catch it. That becomes an
-Invalid Date in nextAttemptAt, which Prisma rejects, taking down the whole
-worker pass. Fixed by guarding the input rather than the result.
+2. Prisma 5.22 -> 6.19.3
 
-Verified live: no auth header -> 401, wrong secret -> 401, correct secret -> 500
-from the unreachable database (not 401), with PrismaClientInitializationError and
-no code errors in the log.
+   prisma@latest resolved to an 8.0 RELEASE CANDIDATE while @prisma/client@latest
+   was 7.10 — mismatched, and not something to put in a production tree. Pinned
+   both to stable 6.19.3. Upgrade warnings gone; build still clean.
 
-81 tests (was 76), tsc clean, 26 routes build clean.
+3. Integration suite: 18 tests against live Postgres
+
+   Covers what had never executed:
+   - credentials: register, sign in, wrong password vs unknown account are
+     indistinguishable, hashes are salted, sessionVersion starts at 0
+   - fittingSnapshot survives a jsonb round trip and does NOT follow the
+     profile when measurements change afterwards
+   - markPaidAndFulfil: PAID, paidAt stamped, stock decremented, outbox row
+     queued; REPLAYED THREE TIMES it does not decrement stock again and does
+     not queue a second alert — the double-counting bug, now actually proven
+   - stock cannot go negative when an order exceeds on-hand, and a paid order
+     stays PAID anyway
+   - outbox: claimed once and never re-sent; a not-yet-due row is left alone;
+     an ORPHANED PROCESSING lock is reclaimed; a FRESH lock is not stolen
+   - GDPR erasure against real foreign keys: order re-parented to a tombstone,
+     fittingSnapshot and guestEmail nulled, financial record intact, no FK error
+   - orderAccessWhere: the owner sees the order, another signed-in user does
+     not, an anonymous caller does not
+
+4. Live sign-in over HTTP, end to end
+
+   CSRF -> POST /api/auth/callback/credentials -> 302 -> authjs.session-token.
+   Then GET /api/avatars returned 200 {"avatars":[]} — real session data, not a
+   401. Then bumped sessionVersion in the database and reused the SAME cookie:
+   401 {"error":"Not signed in"}.
+
+   That is the exact security property claimed when JWT sessions replaced
+   database sessions, now demonstrated rather than asserted. It is the check
+   whose absence let the broken credential config ship unnoticed before.
+
+Also: dev.log had been committed by accident; now gitignored and untracked.
+
+81 unit + 18 integration tests, tsc clean, build clean on Prisma 6.

@@ -40,3 +40,7 @@ yarn-error.log*
 /public/models/**/*.glb
 /public/models/**/*.gltf
 /public/textures/**/*.ktx2
+
+# local dev artefacts
+dev.log
+*.log

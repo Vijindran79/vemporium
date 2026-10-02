@@ -17,13 +17,15 @@
  *
  * Artist contract (see docs/GLB-PIPELINE.md):
  *   Bone names are matched case-insensitively, in this priority order:
- *     hips       -> hip girth          spine     -> waist depth
- *     chest      -> bust/chest girth   shoulder  -> shoulder width
- *     upperArmL/R-> limb girth          thighL/R  -> limb girth
+ *     hips     -> hip girth        spine/waist/abdomen -> waist depth
+ *     chest    -> bust/chest girth  shoulder -> shoulder width
+ *     upperArmL/R -> limb girth      thighL/R  -> limb girth
+ *   Head, neck, hands and feet never match: the face and extremities keep
+ *   their authored proportions at every body setting.
  *   Absent bones are skipped, so a partial rig still works.
  */
 
-import type { BodyParams } from './sizing';
+import type { BodyParams } from "./sizing";
 
 /** Rest measurements the rig is authored against, in cm. */
 export const RIG_REST = {
@@ -41,17 +43,26 @@ export const RIG_REST = {
   hipCm: 95,
 } as const;
 
-export type BoneRole = 'hips' | 'spine' | 'chest' | 'shoulder' | 'arm' | 'thigh';
+export type BoneRole =
+  | "hips"
+  | "spine"
+  | "chest"
+  | "shoulder"
+  | "arm"
+  | "thigh";
 export type BoneScale = [number, number, number];
 
 /** Bone name -> role. Order matters: the first match wins. */
 export const BONE_ROLE_PATTERNS: [RegExp, BoneRole][] = [
-  [/(hips|pelvis)/i, 'hips'],
-  [/(spine|waist)/i, 'spine'],
-  [/(chest|torso|bust)/i, 'chest'],
-  [/(shoulder|clavicle)/i, 'shoulder'],
-  [/(upperarm|arm)/i, 'arm'],
-  [/(thigh|leg|upleg)/i, 'thigh'],
+  [/(hips|pelvis)/i, "hips"],
+  // `abdomen` is the Quaternius name for the waist segment: without it the
+  // waist slider has no bone to move on the bundled bases, and girth changes
+  // jump straight from bust to hips.
+  [/(spine|waist|abdomen)/i, "spine"],
+  [/(chest|torso|bust)/i, "chest"],
+  [/(shoulder|clavicle)/i, "shoulder"],
+  [/(upperarm|arm)/i, "arm"],
+  [/(thigh|leg|upleg)/i, "thigh"],
 ];
 
 /** Resolves a bone name to its role, or null if the rig has no such bone. */
@@ -60,7 +71,7 @@ export function roleForBone(name: string): BoneRole | null {
 }
 
 function isMensLike(body: BodyParams): boolean {
-  return body.gender === 'MALE' || body.gender === 'KID_BOY';
+  return body.gender === "MALE" || body.gender === "KID_BOY";
 }
 
 /**
@@ -79,11 +90,15 @@ function isMensLike(body: BodyParams): boolean {
  * apart — a subtle inconsistency that only ever shows up on one of them.
  */
 function girthRatio(body: BodyParams): number {
-  const actual = isMensLike(body) ? body.chestCm ?? RIG_REST.girthCm : body.bustCm ?? RIG_REST.girthCm;
+  const actual = isMensLike(body)
+    ? (body.chestCm ?? RIG_REST.girthCm)
+    : (body.bustCm ?? RIG_REST.girthCm);
   return actual / RIG_REST.girthCm || 1;
 }
 
-export function computeBoneScales(body: BodyParams): Record<BoneRole, BoneScale> {
+export function computeBoneScales(
+  body: BodyParams,
+): Record<BoneRole, BoneScale> {
   // `|| 1` guards a missing measurement: a zero would collapse the rig flat.
   const hip = body.hipCm / RIG_REST.hipCm || 1;
   const waist = body.waistCm / RIG_REST.waistCm || 1;

@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * The virtual fitting room canvas.
@@ -11,17 +11,17 @@
  *  - avatar geometry is memoised and rebuilt only when a measurement changes
  */
 
-import { Suspense, useMemo, useRef } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
-import { ContactShadows, Environment, OrbitControls } from '@react-three/drei';
-import * as THREE from 'three';
-import type { Group } from 'three';
+import { Suspense, useMemo, useRef } from "react";
+import { Canvas, useFrame } from "@react-three/fiber";
+import { ContactShadows, Environment, OrbitControls } from "@react-three/drei";
+import * as THREE from "three";
+import type { Group } from "three";
 
-import { AvatarAsset } from './AvatarAsset';
-import { deriveMetrics } from './ParametricAvatar';
-import { GarmentMesh } from './Garment';
-import { useAvatarStore } from '@/store/avatar-store';
-import type { GarmentSpec } from '@/store/avatar-store';
+import { AvatarAsset } from "./AvatarAsset";
+import { deriveMetrics } from "./ParametricAvatar";
+import { GarmentMesh } from "./Garment";
+import { useAvatarStore } from "@/store/avatar-store";
+import type { GarmentSpec } from "@/store/avatar-store";
 
 /**
  * Turntable angle lives outside React state on purpose: a 60fps setState here
@@ -49,12 +49,13 @@ function Turntable({ speed = 0.35 }: { speed?: number }) {
     // Clamp delta so a backgrounded tab does not spin the model on return.
     const dt = Math.min(delta, 0.05);
     stageRotation.current += dt * speed;
-    if (stageRotation.current > Math.PI * 2) stageRotation.current -= Math.PI * 2;
+    if (stageRotation.current > Math.PI * 2)
+      stageRotation.current -= Math.PI * 2;
   });
   return null;
 }
 
-export type CameraView = 'front' | 'back' | 'side' | 'three-quarter';
+export type CameraView = "front" | "back" | "side" | "three-quarter";
 
 /**
  * Quick camera presets.
@@ -84,11 +85,11 @@ function CameraPresets({ height, view }: { height: number; view: CameraView }) {
       ref={controls}
       makeDefault
       enablePan={false}
-      minDistance={0.9}
-      maxDistance={7}
+      minDistance={1.2}
+      maxDistance={12}
       minPolarAngle={Math.PI * 0.18}
       maxPolarAngle={Math.PI * 0.62}
-      target={[0, height * 0.55, 0]}
+      target={[0, height * 0.52, 0]}
       enableDamping
       dampingFactor={0.08}
     />
@@ -97,7 +98,7 @@ function CameraPresets({ height, view }: { height: number; view: CameraView }) {
 
 const ANGLES: Record<CameraView, number> = {
   front: 0,
-  'three-quarter': Math.PI * 0.25,
+  "three-quarter": Math.PI * 0.25,
   side: Math.PI * 0.5,
   back: Math.PI,
 };
@@ -124,7 +125,7 @@ export default function FittingRoomCanvas({
   secondary,
   compareMode,
   onSelectGarment,
-  view = 'front',
+  view = "front",
   modelUrl,
   className,
 }: FittingRoomCanvasProps) {
@@ -142,24 +143,29 @@ export default function FittingRoomCanvas({
   const comparing = compareMode ?? storeCompareMode;
 
   const metrics = useMemo(() => deriveMetrics(body), [body]);
-  const camY = metrics.height * 0.55;
-  const camZ = Math.max(1.6, metrics.height * 1.9);
+  // Frame the WHOLE figure. The PRD target is a full-body view with the hem
+  // visible, because a garment that cannot be seen to its hem cannot be
+  // judged. The previous 1.9x-height distance framed only the torso: with a
+  // 168cm body at fov 38 the visible height at that distance is ~1.15m, so
+  // heads and feet were both cropped.
+  const camY = metrics.height * 0.5;
+  const camZ = Math.max(3.4, metrics.height * 3.9);
 
   return (
-    <div className={className ?? 'h-full w-full'}>
+    <div className={className ?? "h-full w-full"}>
       <Canvas
         shadows
         dpr={[1, 2]}
-        gl={{ antialias: true, powerPreference: 'high-performance' }}
+        gl={{ antialias: true, powerPreference: "high-performance" }}
         camera={{ position: [0, camY, camZ], fov: 38, near: 0.1, far: 60 }}
-        frameloop={autoRotate ? 'always' : 'demand'}
+        frameloop={autoRotate ? "always" : "demand"}
         onCreated={({ gl }) => {
           gl.toneMapping = THREE.ACESFilmicToneMapping;
           gl.toneMappingExposure = 1.05;
         }}
       >
-        <color attach="background" args={['#FAF7F0']} />
-        <fog attach="fog" args={['#FAF7F0', 4, 12]} />
+        <color attach="background" args={["#FAF7F0"]} />
+        <fog attach="fog" args={["#FAF7F0", 4, 12]} />
 
         <Stage />
 
@@ -175,8 +181,12 @@ export default function FittingRoomCanvas({
           shadow-bias={-0.0004}
         />
         {/* Rim light separates the silhouette from the ivory background. */}
-        <directionalLight position={[-3, 2.4, -2.5]} intensity={0.5} color="#ffd9a0" />
-        <hemisphereLight args={['#ffffff', '#c9b8a6', 0.5]} />
+        <directionalLight
+          position={[-3, 2.4, -2.5]}
+          intensity={0.5}
+          color="#ffd9a0"
+        />
+        <hemisphereLight args={["#ffffff", "#c9b8a6", 0.5]} />
 
         <group>
           <AvatarAsset
@@ -190,13 +200,17 @@ export default function FittingRoomCanvas({
             <GarmentMesh
               metrics={metrics}
               garment={worn}
-              onSelect={onSelectGarment ? () => onSelectGarment(worn) : undefined}
+              onSelect={
+                onSelectGarment ? () => onSelectGarment(worn) : undefined
+              }
             />
           )}
         </group>
 
         {comparing && compareItem && (
-          <group position={[metrics.height * 0.55, 0, 0]}>
+          // Separated by 0.62x height: enough that two figures plus their arms
+          // never overlap, while still filling the frame side by side.
+          <group position={[metrics.height * 0.62, 0, 0]}>
             <AvatarAsset
               body={body}
               skinToneHex={skinToneHex}
@@ -209,7 +223,14 @@ export default function FittingRoomCanvas({
         )}
 
         {/* Ground contact shadow without a full shadow-map pass. */}
-        <ContactShadows position={[0, 0.001, 0]} opacity={0.32} scale={6} blur={2.6} far={3} resolution={512} />
+        <ContactShadows
+          position={[0, 0.001, 0]}
+          opacity={0.32}
+          scale={6}
+          blur={2.6}
+          far={3}
+          resolution={512}
+        />
 
         {/* Studio env map gives the silk its sheen. */}
         <Environment preset="studio" environmentIntensity={0.45} />

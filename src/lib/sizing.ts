@@ -58,6 +58,52 @@ export function isKid(gender: Gender): boolean {
   return gender === 'KID_BOY' || gender === 'KID_GIRL';
 }
 
+/**
+ * Physiological bounds, in cm/kg. Anything outside these is not a body, it is a
+ * typo or a crafted request.
+ */
+export const BODY_LIMITS = {
+  heightCm: [40, 230] as const,
+  weightKg: [2, 250] as const,
+  girthCm: [20, 200] as const,
+};
+
+function clampNum(v: unknown, [lo, hi]: readonly [number, number], fallback: number): number {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  // Math.min/max rather than an if-chain so NaN cannot slip through either.
+  return Math.min(hi, Math.max(lo, n));
+}
+
+/**
+ * Range-checks and clamps untrusted measurements into BodyParams.
+ *
+ * `gender` is widened to string on purpose: this is fed straight off the wire,
+ * so the signature must admit junk in order to reject it.
+ *
+ * Runs BEFORE anything is persisted, because these numbers drive a size
+ * recommendation. A garbage waist of 999cm would not crash — it would silently
+ * recommend XXL to someone, and that wrong size would ship.
+ */
+export function clampBodyParams(
+  input: Omit<Partial<BodyParams>, 'gender'> & { gender?: string },
+): BodyParams {
+  const gender = (['MALE', 'FEMALE', 'KID_BOY', 'KID_GIRL'] as const).includes(input.gender as Gender)
+    ? (input.gender as Gender)
+    : 'FEMALE';
+
+  const girth = BODY_LIMITS.girthCm;
+  return {
+    gender,
+    heightCm: clampNum(input.heightCm, BODY_LIMITS.heightCm, 165),
+    weightKg: clampNum(input.weightKg, BODY_LIMITS.weightKg, 60),
+    bustCm: input.bustCm == null ? undefined : clampNum(input.bustCm, girth, 0),
+    chestCm: input.chestCm == null ? undefined : clampNum(input.chestCm, girth, 0),
+    waistCm: clampNum(input.waistCm, girth, 70),
+    hipCm: clampNum(input.hipCm, girth, 95),
+  };
+}
+
 export function isMens(gender: Gender): boolean {
   return gender === 'MALE' || gender === 'KID_BOY';
 }

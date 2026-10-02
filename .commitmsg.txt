@@ -1,43 +1,49 @@
-Auth, avatar persistence, GDPR rights, and supplier order alerts
+Link orders to the session before payment capture
 
-Auth (Auth.js v5, credentials)
-- bcrypt at cost 12, and a dummy-hash comparison when no user exists so
-  "no such account" and "wrong password" take the same time
-- One error message for both failure cases, so nothing leaks which emails
-  are registered
-- Database sessions rather than JWTs: a stateless token cannot be revoked,
-  and erasure must sign a shopper out immediately rather than at token expiry
-- 8 hour sessions, not 30 days. Body measurements are sensitive
-- AUTH_SECRET falls back to a dev value that is published in this repo;
-  usingInsecureSecret() makes that detectable in a deployment audit
+Orders are resolved against the session inside POST /api/orders, so when the
+Stripe intent succeeds the webhook transitions an order that already has an
+owner. Capturing first means reconciling orphan guest orders afterwards,
+against a customer who is already asking where their order went.
 
-Avatar persistence
-- GET/POST/DELETE /api/avatars, user resolved from the SESSION and never
-  from the request body. Accepting a client userId would make every route an
-  IDOR over Art. 9 data
-- Measurements range-checked and clamped on the way in; a bad payload must not
-  be able to poison a size recommendation
-- Updates are scoped to the owner, so a foreign id matches zero rows
-- Ten-avatar cap, to stop one account growing unbounded rows
+- userId comes from the session, never the body. A client-supplied userId would
+  let anyone write orders into someone else's history
+- guest checkout still works, but requires an email. An order with no owner and
+  no email could never be delivered or refunded, only lost
+- idempotencyKey is client-supplied and stable per checkout ATTEMPT, so a
+  double-clicked "Place order" returns the original order rather than creating a
+  second one that gets charged twice. The unique constraint is the real guard;
+  a P2002 race resolves to the winning order instead of a 500
 
-GDPR
-- Art. 15/20 export and Art. 17 erasure, implemented as separate operations:
-  you can delete one avatar and keep shopping
-- Erasure is a HARD delete. A soft-deleted row is still personal data
-- Orders are retained because tax law requires it, but re-parented to a
-  tombstone account first so the retained record is no longer personal data.
-  The trade-off is shown to the customer, not left implicit
-- DELETE requires an explicit {"confirm":"DELETE"} body
+fittingSnapshot freezes measurements at purchase
 
-Supplier order alerts
-- The one genuinely correct idea in the earlier Express snippet: notify the
-  workshop on EVERY paid order, not only on reorder. Kept as a separate
-  message type, because telling a karigah to make 30 units for an order of 1
-  is a real and expensive mistake
-- Alerts are grouped by supplier: one message per workshop listing everything
-  it must prepare, not one per line item
-- Numeric reply protocol (1 = accepted, 2 = out of fabric) so acknowledgements
-  are machine-readable
+Order.fittingSnapshot JSON, not a foreign key. The shopper edits their profile
+next month; a return three months after that would otherwise be judged against
+the wrong body, and the blame would land on the customer for our bug.
 
-Verification: 58 unit tests (was 48), tsc clean, 20 routes build clean,
-unauthenticated access to /api/avatars and /api/account both return 401.
+Measured against that: it stores measurements only. No skin tone, no hair,
+because this column outlives the account it came from — and erasure now scrubs
+it. Tax law requires the transaction, not the customer's waist.
+
+FIX: sign-in was broken and shipped that way
+
+Configured with session.strategy "database" and the Credentials provider.
+Auth.js refuses that pairing outright (@auth/core/lib/utils/assert.js:
+"Signing in with credentials only supported if JWT strategy is enabled").
+
+The config parsed, tsc passed, the build passed, and every login failed at
+runtime. Nothing in the toolchain could have caught it.
+
+Now JWT, with the revocation that database sessions would have given us
+recovered via User.sessionVersion: the session callback re-reads the user on
+every request and drops the session if the account is gone or the version
+moved. So erasure still signs the shopper out immediately rather than at token
+expiry, which was the actual requirement.
+
+SESSION_STRATEGY is a named constant with a test, so this cannot silently
+regress again. Verified UnsupportedStrategy occurrences in the runtime log went
+5 -> 0.
+
+Also: preflight DB reads are now inside the error boundary, so an unreachable
+database returns 503 instead of an unhandled 500 leaking a Prisma stack trace.
+
+64 tests (was 58), tsc clean, 20 routes build clean.

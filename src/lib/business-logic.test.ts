@@ -27,9 +27,11 @@ import { currencyForCountry } from './currency.ts';
 import { useAvatarStore } from '../store/avatar-store.ts';
 import { computeBoneScales, roleForBone, RIG_REST } from './rig.ts';
 import { buildOrderAlertMessage, confirmationDeadline, type OrderAlertPayload } from './dispatch.ts';
-import { usingInsecureSecret, SESSION_MAX_AGE_SECONDS } from './auth-config.ts';
+import { usingInsecureSecret, SESSION_MAX_AGE_SECONDS, SESSION_STRATEGY } from './auth-config.ts';
 import { RETENTION_NOTICE } from './privacy.ts';
 import { scoreFit, MINIMUM_CONFIDENCE } from './fit.ts';
+import { buildFittingSnapshot, isFittingSnapshot } from './fitting-snapshot.ts';
+import { clampBodyParams, BODY_LIMITS } from './sizing.ts';
 import { cmToIn, inchToCm, kgToLb, lbToKg, toFeetInches, formatLength } from './units.ts';
 
 const sku = (over: Partial<SkuState> = {}): SkuState => ({
@@ -356,9 +358,22 @@ test('the dev auth secret is recognisable, and sessions are short-lived', () => 
   assert.ok(SESSION_MAX_AGE_SECONDS <= 60 * 60 * 24, 'sessions must not outlive a day');
 });
 
+test('the session strategy stays JWT', () => {
+  // Regression guard. This was once configured as 'database', which parses, type
+  // checks and builds cleanly — and then fails every single login at runtime
+  // with UnsupportedStrategy, because Auth.js will not pair the Credentials
+  // provider with database sessions.
+  //
+  // Nothing in the build or the type system catches that. Only this does.
+  assert.equal(SESSION_STRATEGY, 'jwt', 'Credentials provider requires the JWT strategy');
+});
+
 test('the retention notice states exactly what we keep after erasure', () => {
   assert.match(RETENTION_NOTICE, /tax law/i);
-  assert.match(RETENTION_NOTICE, /email removed/i);
+  assert.match(RETENTION_NOTICE, /email and body measurements removed/i);
+  // The notice is a promise. If erasure stopped scrubbing the fitting
+  // snapshot, this text would be a lie — so the claim is asserted here.
+  assert.match(RETENTION_NOTICE, /not the measurements/i);
 });
 
 // --- duties ----------------------------------------------------------------
@@ -518,5 +533,60 @@ test('heights render as feet and inches', () => {
   assert.deepEqual(toFeetInches(170), { feet: 5, inches: 7 });
   assert.equal(formatLength(170, 'metric'), '170 cm');
   assert.equal(formatLength(170, 'imperial'), '5′ 7″');
+});
+
+// --- fitting snapshot -----------------------------------------------------
+
+test('the snapshot freezes the body as it was at purchase', () => {
+  const body = clampBodyParams({ gender: 'FEMALE', heightCm: 165, weightKg: 58, bustCm: 88, waistCm: 70, hipCm: 96 });
+  const snap = buildFittingSnapshot(body, [{ slug: 'saree', title: 'Chanderi Silk Saree', size: 'M', quantity: 1 }], new Date('2026-01-15T10:00:00Z'));
+
+  // The shopper then edits their profile. The snapshot must not follow them.
+  const later = clampBodyParams({ gender: 'FEMALE', heightCm: 165, weightKg: 74, bustCm: 99, waistCm: 84, hipCm: 106 });
+  const snap2 = buildFittingSnapshot(later, [], new Date('2026-02-15T10:00:00Z'));
+
+  assert.equal(snap.body.waistCm, 70, 'the historical snapshot keeps the original waist');
+  assert.equal(snap2.body.waistCm, 84);
+  assert.deepEqual(snap.items, [{ slug: 'saree', title: 'Chanderi Silk Saree', size: 'M', quantity: 1 }]);
+  assert.equal(snap.capturedAt, '2026-01-15T10:00:00.000Z');
+});
+
+test('the snapshot stores measurements only, never appearance attributes', () => {
+  const body = clampBodyParams({ gender: 'MALE', heightCm: 175, weightKg: 72, chestCm: 96, waistCm: 82, hipCm: 96 });
+  const snap = buildFittingSnapshot(body, []);
+  const keys = Object.keys(snap.body).sort();
+
+  // skinToneHex / hairStyleId live on AvatarProfile and must NOT be copied here:
+  // this column outlives the account it came from.
+  assert.deepEqual(keys, ['bustCm', 'chestCm', 'gender', 'heightCm', 'hipCm', 'waistCm', 'weightKg']);
+  assert.ok(!JSON.stringify(snap).toLowerCase().includes('skin'), 'no skin tone in a permanent record');
+});
+
+test('absent bust/chest are null rather than missing', () => {
+  const snap = buildFittingSnapshot(
+    clampBodyParams({ gender: 'MALE', heightCm: 175, weightKg: 72, waistCm: 82, hipCm: 96 }),
+    [],
+  );
+  // A JSON column whose field is sometimes absent and sometimes null is a
+  // schema nobody can query later.
+  assert.equal(snap.body.bustCm, null);
+  assert.ok('bustCm' in snap.body);
+});
+
+test('measurements are clamped into physiological range', () => {
+  const wild = clampBodyParams({ gender: 'NONSENSE', heightCm: 9999, weightKg: -5, waistCm: 1e9, hipCm: NaN });
+  assert.equal(wild.heightCm, BODY_LIMITS.heightCm[1]);
+  assert.equal(wild.weightKg, BODY_LIMITS.weightKg[0]);
+  assert.equal(wild.waistCm, BODY_LIMITS.girthCm[1]);
+  assert.equal(wild.hipCm, 95, 'NaN falls back to a plausible default, never NaN');
+  assert.equal(wild.gender, 'FEMALE', 'an unknown gender falls back rather than persisting junk');
+});
+
+test('a snapshot read back from JSON is recognisable', () => {
+  const snap = buildFittingSnapshot(clampBodyParams({ gender: 'FEMALE', heightCm: 160, weightKg: 55, bustCm: 84, waistCm: 68, hipCm: 92 }), []);
+  assert.ok(isFittingSnapshot(JSON.parse(JSON.stringify(snap))), 'survives a JSON round trip');
+  assert.ok(!isFittingSnapshot(null));
+  assert.ok(!isFittingSnapshot({ body: {} }));
+  assert.ok(!isFittingSnapshot('nope'));
 });
 

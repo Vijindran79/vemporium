@@ -15,6 +15,7 @@
  * detached from the identity first.
  */
 
+import { Prisma } from '@prisma/client';
 import { prisma } from './db';
 import { currentUserId } from './auth';
 
@@ -55,13 +56,20 @@ export interface DataExport {
     items: { title: string; size: string; quantity: number }[];
   }[];
   /**
-   * Stated explicitly rather than leaving the customer guessing what we kept.
+   * The order financial record survives erasure, but the body measurements on
+   * it do not.
+   *
+   * An Order row is retained because tax law requires it, and that row carries
+   * `fittingSnapshot` — body measurements, which are special-category personal
+   * data. Tax law requires the SALES RECORD, not the customer's waist.
+   * eraseAccount scrubs the snapshot while keeping the money, so what remains
+   * is no longer personal data.
    */
   retentionNotice: string;
 }
 
 export const RETENTION_NOTICE =
-  'Avatars and account data are deleted on request. Order records are retained with your email removed, because tax law requires sales records to be kept.';
+  'Avatars and account data are deleted on request. Sales records are retained with your email and body measurements removed, because tax law requires us to keep the transaction but not the measurements.';
 
 function toExport(row: {
   id: string;
@@ -175,7 +183,19 @@ export async function eraseAccount(userId?: string): Promise<{ ok: boolean; erro
       const tombstone = await tx.user.create({
         data: { email: `erased+${id}@invalid.local`, name: 'Erased customer', marketingOptIn: false },
       });
-      await tx.order.updateMany({ where: { id: { in: orderIds } }, data: { userId: tombstone.id } });
+      await tx.order.updateMany({
+        where: { id: { in: orderIds } },
+        data: {
+          userId: tombstone.id,
+          // The snapshot is special-category body data sitting on a row we are
+          // keeping for TAX reasons. Tax law requires the transaction, not the
+          // customer's waist measurement. Without this line, "erase my account"
+          // would leave their body measurements on disk indefinitely — which is
+          // precisely the promise this function makes to the customer.
+          fittingSnapshot: Prisma.DbNull,
+          guestEmail: null,
+        },
+      });
     }
     await tx.session.deleteMany({ where: { userId: id } });
     // Cascades avatars, accounts and any remaining sessions.

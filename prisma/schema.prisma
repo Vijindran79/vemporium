@@ -181,6 +181,19 @@ model User {
   // account, and closing the account must cascade every avatar away.
   marketingOptIn Boolean @default(false)
 
+  /// Bumped to invalidate every outstanding session for this user.
+  ///
+  /// Why this exists: Auth.js refuses to combine the Credentials provider with
+  /// `session.strategy: "database"` (@auth/core assert.js), so a password login
+  /// can ONLY work with JWT sessions — and a bare JWT cannot be revoked.
+  ///
+  /// This column is the revocation that the database-session table would have
+  /// given us for free. The session callback re-reads the user on every request
+  /// and drops the session if the version no longer matches, so "sign out
+  /// everywhere" and account erasure both take effect immediately rather than
+  /// at token expiry.
+  sessionVersion Int @default(0)
+
   avatars  AvatarProfile[]
   orders   Order[]
   accounts Account[]
@@ -347,6 +360,10 @@ enum OrderStatus {
   PENDING_PAYMENT
   PAID
   FULFILLING
+  // Set when the supplier has been told to prepare the goods. Separate from
+  // SHIPPED because "the workshop is working on it" and "it is with the
+  // courier" are different facts an operator needs to distinguish.
+  DISPATCHED
   SHIPPED
   DELIVERED
   CANCELLED
@@ -357,7 +374,11 @@ model Order {
   id        String  @id @default(uuid()) @db.Uuid
   reference String  @unique
   userId    String? @db.Uuid
-  user      User?   @relation(fields: [userId], references: [id])
+  user      User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  // Guest checkout. Required when userId is null — an order with no owner and
+  // no email could never be delivered or refunded.
+  guestEmail String?
 
   status             OrderStatus @default(PENDING_PAYMENT)
   currency           String // local currency actually charged
@@ -371,12 +392,35 @@ model Order {
   paymentProvider    String? // stripe | kakaopay | klarna | paypay | paypal
   paymentRef         String?
 
+  // --- Stripe readiness --------------------------------------------------
+  // Unique so a webhook can never transition the same intent twice, and so a
+  // replayed event is caught by the constraint rather than by hope.
+  stripePaymentIntentId String? @unique
+  // Client-supplied, stable across retries of the SAME checkout attempt. A
+  // double-clicked "Place order" reuses the key and returns the original order
+  // instead of creating a second one.
+  idempotencyKey String? @unique
+
+  /// Immutable fitting snapshot.
+  ///
+  /// A foreign key to AvatarProfile is NOT enough: the shopper edits their
+  /// measurements next month, and a return three months after that would be
+  /// judged against the wrong body. This freezes what they were wearing the day
+  /// they bought it.
+  ///
+  /// Data minimisation: measurements only, no skin tone or hairstyle. Those do
+  /// not affect fit, and this column SURVIVES account erasure (see
+  /// eraseAccount), so anything written here is data we keep permanently.
+  fittingSnapshot Json?
+
   items     OrderItem[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([status])
+  @@index([userId])
   @@index([createdAt])
+  @@index([guestEmail])
 }
 
 model OrderItem {

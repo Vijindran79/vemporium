@@ -217,8 +217,15 @@ profile.
 **Auth.** Credentials provider with bcrypt (cost 12). Two decisions worth
 knowing:
 
-- **Database sessions, not JWTs.** A stateless token cannot be revoked. Erasure
-  must sign a shopper out immediately, not whenever a token happens to expire.
+- **JWT sessions with server-side revocation.** Auth.js will not pair the
+  Credentials provider with `strategy: "database"` — it throws
+  `UnsupportedStrategy` at sign-in. Password login *forces* JWTs, so
+  database-session revocation was never available. It is recovered with
+  `User.sessionVersion`: the session callback re-reads the user on every
+  request and discards the session if the account is gone or the version moved,
+  so erasure still signs the shopper out immediately rather than at token
+  expiry. `SESSION_STRATEGY` is a named constant with a test, because this was
+  originally configured wrong and the failure was invisible to the build.
 - **Sign-in failure is timing-indistinguishable.** A missing user still runs a
   bcrypt comparison against a dummy hash, so "no such account" and "wrong
   password" take the same time. Without it, response latency is a free
@@ -229,12 +236,29 @@ the user from the **session**, never the request body — accepting a `userId`
 from the client would make each route an IDOR over Art. 9 data. Measurements
 are range-checked and clamped on the way in.
 
+**Order linking.** `POST /api/orders` resolves the session and attaches
+`userId`. Guest checkout still works but requires an email — an order with no
+owner and no email could never be delivered or refunded. `idempotencyKey` makes
+a double-clicked "Place order" return the original order rather than creating a
+second one.
+
+**Fitting snapshot.** `Order.fittingSnapshot` freezes the buyer's measurements
+at purchase time. A foreign key to the avatar is not enough: the shopper edits
+their profile next month, and a return three months later would be judged
+against the wrong body. Measurements only — no skin tone or hair, because that
+column outlives the account it came from.
+
 **Data rights.** `GET /api/account` exports everything (Art. 15/20);
 `DELETE /api/account` erases (Art. 17). Erasure is a **hard delete** — a
 soft-deleted row is still personal data under GDPR. Sales records are retained
 because tax law requires it, but are re-parented to a tombstone account first,
 so the retained record is no longer personal data. That trade-off is stated to
 the customer in `RETENTION_NOTICE` rather than left implicit.
+
+Erasure also **scrubs `fittingSnapshot`** while keeping the money. Tax law
+requires the transaction, not the customer's waist measurement — so without
+that, "erase my account" would leave body data on disk indefinitely and the
+retention notice would be a lie.
 
 The delete endpoint requires an explicit `{"confirm":"DELETE"}` body. A stray
 double-click should not be enough to destroy someone's saved avatars.

@@ -3,6 +3,9 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { CATALOG } from '@/lib/catalog';
 import { AddToCartPanel, SeeOnAvatarButton, SizeMatchWidget } from '@/components/product/ProductPanels';
+import { productJsonLd, breadcrumbJsonLd } from '@/lib/structured-data';
+import { reviewsFor } from '@/lib/seed-reviews';
+import { ReviewPanel } from '@/components/product/ReviewPanel';
 
 export function generateStaticParams() {
   return CATALOG.map((p) => ({ slug: p.slug }));
@@ -66,8 +69,23 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
 
   const drapeLabel = item.drapingType === 'WRAPPED' ? 'Wrapped' : item.drapingType === 'FLOWING' ? 'Flowing' : 'Structured';
 
+  const productLd = productJsonLd(item, reviewsFor(item.slug));
+  const breadcrumbLd = breadcrumbJsonLd([
+    { name: 'Home', path: '/' },
+    { name: item.categoryLabel + 's', path: '/catalog' },
+    { name: item.title, path: '/product/' + item.slug },
+  ]);
+
   return (
     <main className="mx-auto max-w-6xl px-4 py-8">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(productLd) }}
+      />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbLd) }}
+      />
       <nav className="mb-4 text-xs text-stone-500">
         <Link href="/" className="hover:text-maroon">Home</Link>
         <span className="mx-1.5">/</span>
@@ -132,6 +150,10 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
             <AddToCartPanel item={item} />
           </div>
         </div>
+      </div>
+
+      <div className="mt-12">
+        <ReviewPanel reviews={reviewsFor(item.slug)} />
       </div>
     </main>
   );

@@ -36,10 +36,18 @@ yarn-error.log*
 /prisma/*.db
 /prisma/*.db-journal
 
-# local 3D / texture scratch space (large binaries -> keep out of git)
-/public/models/**/*.glb
+# 3D assets the fitting room LOADS are tracked: they are the product, not
+# scratch. Excluding them meant every deploy had no avatar, the GLB request
+# 404'd, and the error boundary quietly swapped in the procedural mannequin —
+# so live visitors saw a wooden peg figure and no one knew why.
+#
+# Only genuinely unused binaries stay ignored.
+# /public/models/**/*.glb        <- removed deliberately, see above
 /public/models/**/*.gltf
 /public/textures/**/*.ktx2
+/public/models/scratch/
+/public/models/**/*.fbx
+/public/models/**/*.obj
 
 # local dev artefacts
 dev.log

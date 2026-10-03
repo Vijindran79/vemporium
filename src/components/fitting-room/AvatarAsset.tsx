@@ -415,15 +415,10 @@ function HairAttachment({
       hair.updateMatrixWorld(true);
     }
 
-    const box = new THREE.Box3().setFromObject(hair);
-    const headWorld = new THREE.Vector3();
-    head.getWorldPosition(headWorld);
-    console.log(
-      `[HAIR] ${styleUrl} parent=${hair.parent?.type}/${(hair.parent as Bone).name} ` +
-        `localPos=${hair.position.toArray().map((v) => v.toFixed(3)).join(",")} ` +
-        `worldCentre=${box.getCenter(new THREE.Vector3()).toArray().map((v) => v.toFixed(3)).join(",")} ` +
-        `headJointWorld=${headWorld.toArray().map((v) => v.toFixed(3)).join(",")}`,
-    );
+    // NOTE: no per-frame logging here. A console.log (or a Box3 walk) inside
+    // useFrame runs 60x a second for every avatar on screen and was the reason
+    // the fitting room pinned a core. Debugging output belongs in a temporary
+    // effect keyed on [hair, spec], not in the render loop.
     invalidate();
   });
 

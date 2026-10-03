@@ -13,7 +13,7 @@
     "db:push": "prisma db push",
     "db:generate": "prisma generate",
     "db:seed": "tsx prisma/seed.ts",
-    "test:integration": "tsx --test src/lib/integration.test.ts",
+    "test:integration": "tsx --test src/lib/integration.test.ts src/lib/promo-integration.test.ts",
     "db:migrate": "prisma migrate dev",
     "worker": "tsx src/jobs/outbox-worker.ts"
   },

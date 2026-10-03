@@ -261,6 +261,10 @@ export interface PromoAppliedTotals {
   chargesUsd: number;
   /** What the shopper pays, USD. */
   totalUsd: number;
+  /** The code that was applied, normalised. */
+  code: string;
+  /** True when this code zeroed the shipping line. */
+  freeShipping: boolean;
   landed: LandedCostBreakdown;
 }
 
@@ -294,6 +298,10 @@ export function applyPromo(
     totals: {
       goodsUsd: verdict.discountedGoodsUsd,
       discountUsd: verdict.discountUsd,
+      /** Echoed back so callers can render which code was applied, and so
+       * the order handler can store exactly what was evaluated. */
+      code: verdict.code,
+      freeShipping: verdict.freeShipping,
       chargesUsd,
       totalUsd,
       landed: { ...landed, shippingUsd, totalUsd },

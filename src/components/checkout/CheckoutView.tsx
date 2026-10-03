@@ -17,11 +17,12 @@ import Link from 'next/link';
 import { cartSubtotalUsd, useCartStore } from '@/store/cart-store';
 import { MARKET_COUNTRIES, useMarketStore } from '@/store/market-store';
 import { useMoney } from '@/components/shell/MoneyProvider';
-import { calculateLandedCost } from '@/lib/duties';
+import { bandForCountry, calculateLandedCost } from '@/lib/duties';
 import { paymentMethodsFor } from '@/lib/payments';
 import { currencyForCountry, toMinorUnits, localeForCountry } from '@/lib/currency';
 import { storeCheckoutToken } from '@/lib/stripe-client';
 import { StripePaymentStep } from './StripePaymentStep';
+import { PromoCodeField, type PromoPreview } from './PromoCodeField';
 
 type Step = 'delivery' | 'payment' | 'review' | 'pay';
 
@@ -41,6 +42,9 @@ export function CheckoutView() {
   const [placing, setPlacing] = useState(false);
   const [reference, setReference] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Server-validated preview of an applied code. Advisory only: the amount
+  // actually charged comes from the persisted order, never from this.
+  const [promo, setPromo] = useState<PromoPreview | null>(null);
   // Set once the order exists and Stripe has a client secret for it.
   const [payment, setPayment] = useState<{ orderId: string; clientSecret: string } | null>(null);
 
@@ -59,7 +63,25 @@ export function CheckoutView() {
 
   const methods = useMemo(() => paymentMethodsFor(country), [country]);
   const subtotalUsd = useMemo(() => cartSubtotalUsd(lines), [lines]);
-  const landed = useMemo(() => calculateLandedCost(subtotalUsd, country), [subtotalUsd, country]);
+  // With a code applied we show the SERVER's recomputed breakdown, not our own
+  // arithmetic on the discount. That is what keeps this panel honest: the duty,
+  // tax and shipping shown here are the same numbers the order will be created
+  // with, because both come from applyPromo().
+  const landed = useMemo(() => {
+    if (promo) {
+      return {
+        goodsUsd: promo.totals.goodsUsd,
+        dutyUsd: promo.totals.dutyUsd,
+        taxUsd: promo.totals.taxUsd,
+        shippingUsd: promo.totals.shippingUsd,
+        handlingUsd: promo.totals.handlingUsd,
+        totalUsd: promo.totals.totalUsd,
+        deMinimisApplied: false,
+        band: bandForCountry(country),
+      };
+    }
+    return calculateLandedCost(subtotalUsd, country);
+  }, [promo, subtotalUsd, country]);
 
   const selected = methods.find((m) => m.provider === method) ?? methods[0];
   // DISPLAY ONLY. The amount actually charged is derived server-side from the
@@ -129,6 +151,10 @@ export function CheckoutView() {
           // Stable per checkout attempt, so a double-click cannot create two
           // orders (and therefore two payment intents).
           idempotencyKey: checkoutKey,
+          // The code is a REQUEST, not an amount. The server re-resolves it
+          // and recomputes the discount; a client-sent discount would be a
+          // client-chosen price.
+          promoCode: promo?.code ?? null,
         }),
       });
       const data = await res.json();
@@ -323,6 +349,13 @@ export function CheckoutView() {
           ))}
         </ul>
 
+        {promo && (
+          <div className="flex justify-between text-sm text-emerald-700">
+            <dt>Discount ({promo.code})</dt>
+            <dd>-{money(promo.discountUsd)}</dd>
+          </div>
+        )}
+
         <dl className="mt-3 space-y-1.5 border-t border-stone-200 pt-3 text-sm">
           <div className="flex justify-between">
             <dt className="text-stone-600">Duty</dt>
@@ -341,6 +374,8 @@ export function CheckoutView() {
             <dd className="text-maroon">{money(landed.totalUsd)}</dd>
           </div>
         </dl>
+
+        <PromoCodeField country={country} applied={promo} onApply={setPromo} />
 
         <p className="mt-3 text-[10px] text-stone-400">
           Charged to the PSP as {minorUnits} minor units (

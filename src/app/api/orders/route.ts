@@ -21,6 +21,8 @@ import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { calculateLandedCost } from '@/lib/duties';
+import { applyPromo } from '@/lib/promos';
+import { findPromo, redemptionCount, customerRedemptionCount } from '@/lib/promo-store';
 import { isCurrencyCode, type CurrencyCode } from '@/lib/currency';
 import { CATALOG } from '@/lib/catalog';
 import { auth } from '@/lib/auth';
@@ -51,6 +53,26 @@ interface OrderRequest {
   idempotencyKey?: string;
   /** Avatar to freeze into the order's fitting snapshot. */
   avatarId?: string;
+  /**
+   * A promo code REQUEST. Never a discount amount.
+   *
+   * The client may send any string here, including one it saw on another
+   * basket, so the code is resolved against THIS order's re-priced goods
+   * below and the discount is derived server-side. A client that sent
+   * discountUsd: 999 would be ignored entirely.
+   */
+  promoCode?: string | null;
+}
+
+/** Resolve a normalised promo code back to its row id. Null on any failure. */
+async function promoRowId(code: string): Promise<string | null> {
+  try {
+    const row = await prisma.promoCode.findUnique({ where: { code }, select: { id: true } });
+    return row?.id ?? null;
+  } catch (err) {
+    console.error('[orders] promo id lookup failed', err);
+    return null;
+  }
 }
 
 export async function POST(request: Request) {
@@ -127,7 +149,72 @@ export async function POST(request: Request) {
     });
   }
 
-  const landed = calculateLandedCost(subtotalUsd, body.destinationCountry);
+  // --- Promo resolution ----------------------------------------------------
+  //
+  // The discount is decided HERE, from a code the client merely nominated. The
+  // order total below, and therefore the Stripe amount in
+  // /api/checkout/create-intent, is derived from this and nothing else.
+  //
+  // Two independent reasons the ordering matters:
+  //
+  //   1. Duty and import VAT are levied on the DECLARED value, so they must be
+  //      recomputed on the discounted goods rather than subtracted from a
+  //      pre-discount total. Doing it the other way under-charges duty on every
+  //      discounted order - a margin leak that only shows up in an audit.
+  //
+  //   2. The UI preview is advisory. If the basket changed, the code expired,
+  //      or the shopper simply lied, the figure the shopper watched is not the
+  //      figure we charge. Recomputing here is what stops that gap being money.
+  const requestedCode =
+    typeof body.promoCode === 'string' ? body.promoCode.trim().slice(0, 64) : '';
+  const promoNow = new Date();
+
+  let promoId: string | null = null;
+  let promoApplied: string | null = null;
+  let discountUsd = 0;
+  let landed = calculateLandedCost(subtotalUsd, body.destinationCountry);
+
+  if (requestedCode) {
+    const promo = await findPromo(requestedCode, promoNow);
+
+    if (promo) {
+      // Resolve the row id for the redemption counts. Kept separate from
+      // findPromo so the rules never carry internal identifiers.
+      promoId = await promoRowId(promo.code);
+
+      const [totalRedemptions, mine] = promoId
+        ? await Promise.all([
+            redemptionCount(promoId),
+            customerRedemptionCount(promoId, userId, userId ? null : submittedEmail || null),
+          ])
+        : [0, 0];
+
+      const applied = applyPromo({
+        promo,
+        goodsUsd: subtotalUsd,
+        destinationCountry: body.destinationCountry,
+        now: promoNow,
+        customerRedemptions: mine,
+      });
+
+      // maxRedemptions is a GLOBAL cap, which the pure module cannot know, so it
+      // is enforced here — same as in /api/promos/validate.
+      const exhausted =
+        promo.maxRedemptions !== null && totalRedemptions >= promo.maxRedemptions;
+
+      if (applied.ok && !exhausted) {
+        landed = applied.totals.landed;
+        discountUsd = applied.totals.discountUsd;
+        promoApplied = applied.totals.code;
+      }
+      // A code that fails here is IGNORED, not fatal: the shopper still gets the
+      // undiscounted order they were going to place anyway. Refusing the whole
+      // order would turn an expired voucher into a lost sale.
+    }
+    // An unrecognised code is likewise ignored rather than rejected, for the
+    // same reason. promoApplied stays null so the order records that nothing
+    // was granted, which is what redemption counting relies on.
+  }
   const currency: CurrencyCode = isCurrencyCode(body.currency) ? body.currency : 'USD';
   const rate = Number.isFinite(body.fxRate) && body.fxRate > 0 ? body.fxRate : 1;
   const toLocal = (usd: number) => Math.round(usd * rate * 100) / 100;
@@ -146,6 +233,10 @@ export async function POST(request: Request) {
         taxLocal: toLocal(landed.taxUsd),
         shippingLocal: toLocal(landed.shippingUsd),
         totalLocal: toLocal(landed.totalUsd),
+        // No row is written on this path, so there is nothing to attach a promo
+        // to. The granted discount is still reported so the UI can reconcile.
+        discountLocal: toLocal(discountUsd),
+        promoCodeApplied: promoApplied,
         currency,
         fxRate: rate,
       },
@@ -256,6 +347,11 @@ export async function POST(request: Request) {
         taxLocal: toLocal(landed.taxUsd),
         shippingLocal: toLocal(landed.shippingUsd),
         totalLocal: toLocal(landed.totalUsd),
+        // Recorded, not recomputed later: a promo can be edited or purged
+        // after purchase, and the order must still show what was granted.
+        promoCodeId: promoId,
+        promoCodeApplied: promoApplied,
+        discountLocal: toLocal(discountUsd),
         destinationCountry: body.destinationCountry ?? 'US',
         paymentProvider: body.paymentProvider,
         idempotencyKey,
@@ -293,6 +389,12 @@ export async function POST(request: Request) {
         taxLocal: toLocal(landed.taxUsd),
         shippingLocal: toLocal(landed.shippingUsd),
         totalLocal: toLocal(landed.totalUsd),
+        // Echoed so the client can reconcile its advisory preview against what
+        // was actually granted. promoCodeApplied being null while the shopper
+        // saw a discount means the code was ignored server-side, which is
+        // visible rather than silent.
+        discountLocal: toLocal(discountUsd),
+        promoCodeApplied: promoApplied,
         currency,
         fxRate: rate,
       },

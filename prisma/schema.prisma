@@ -353,6 +353,65 @@ model PurchaseOrderLine {
 }
 
 // ---------------------------------------------------------------------------
+// Promotions
+// ---------------------------------------------------------------------------
+
+/// A discount code.
+///
+/// The RULES live in src/lib/promos.ts as a pure function so they can be tested
+/// without a database; this model only holds the DATA those rules read. That
+/// split is deliberate: the arithmetic that decides what we charge is the code
+/// most worth having under test, and it must not be entangled with a query.
+///
+/// Money fields are USD base, matching Product.basePriceUsd. A discount applies
+/// to the goods value BEFORE duty, so the declared value drops with it - see
+/// applyPromo() for why that ordering is not optional.
+model PromoCode {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Stored normalised (trimmed, uppercased) by the writer, so lookup is a
+  /// single equality and never a case-insensitive scan.
+  code String @unique
+
+  /// PERCENT | FIXED | FREE_SHIPPING - matches PromoKind in lib/promos.ts.
+  kind String
+
+  /// Fraction off goods (PERCENT), or amount off in USD (FIXED). Null for
+  /// FREE_SHIPPING. Guarded by the structural validator rather than a CHECK
+  /// constraint: a malformed row must be REJECTED loudly, not silently clamped,
+  /// because a promo that pays out more than it charges is a hole in the
+  /// pricing engine, not a typo to paper over.
+  percentOff Decimal? @db.Decimal(5, 4)
+  amountOffUsd Decimal? @db.Decimal(10, 2)
+
+  minSubtotalUsd Decimal? @db.Decimal(10, 2)
+
+  startsAt DateTime
+  endsAt DateTime?
+
+  /// Null = unlimited. Usage is counted from the orders that redeemed it, not
+  /// from a counter column, so the count cannot drift out of step with the rows
+  /// it is supposed to describe.
+  maxRedemptions Int?
+  perCustomerLimit Int?
+
+  /// False means this code stands alone.
+  stackable Boolean @default(false)
+
+  /// Prisma has no scalar list on Postgres, so categories are comma-joined.
+  /// Null or empty means every category.
+  appliesToCategories String?
+
+  active Boolean @default(true)
+
+  orders Order[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([active, startsAt, endsAt])
+}
+// ---------------------------------------------------------------------------
 // Commerce
 // ---------------------------------------------------------------------------
 
@@ -424,6 +483,25 @@ model Order {
   /// Data minimisation: measurements only, no skin tone or hairstyle. Those do
   /// not affect fit, and this column SURVIVES account erasure (see
   /// eraseAccount), so anything written here is data we keep permanently.
+  /// The code that was applied to this order, if any.
+  ///
+  /// Recorded rather than recomputed later: a promotion can be edited or
+  /// deactivated after purchase, and an order must still show what was actually
+  /// granted. This is also the redemption ledger - usage limits are counted
+  /// from these rows, which is why a counter column on PromoCode would drift.
+  promoCodeId String? @db.Uuid
+  promoCode   PromoCode? @relation(fields: [promoCodeId], references: [id], onDelete: SetNull)
+
+  /// The CODE as the shopper typed it, frozen at purchase.
+  ///
+  /// Not a substitute for the FK, and deliberately kept even though
+  /// onDelete:SetNull means the FK can go missing: if a promo row is ever
+  /// purged, this still answers "what discount did we give this customer?".
+  promoCodeApplied String?
+
+  /// Discount granted, in USD base at the time of purchase.
+  discountLocal Decimal @default(0) @db.Decimal(12, 2)
+
   fittingSnapshot Json?
 
   items     OrderItem[]

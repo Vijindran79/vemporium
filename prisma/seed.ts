@@ -114,6 +114,80 @@ async function main() {
     console.log(`product: ${p.slug} (${SIZES.length} variants)`);
   }
 
+  // --- Promo codes ---------------------------------------------------------
+  //
+  // Upserted by code so a re-seed refreshes the rules without duplicating them.
+  // Percentages are stored as FRACTIONS (0.10 = 10%), matching PromoCode.percentOff.
+  //
+  // These deliberately include the awkward cases the validator must handle:
+  // a minimum spend, an expired code, and a per-customer limit of one.
+  const PROMOS = [
+    {
+      code: 'LAUNCH2026',
+      kind: 'PERCENT',
+      percentOff: 0.1,
+      minSubtotalUsd: null,
+      maxRedemptions: null,
+      perCustomerLimit: null,
+      stackable: false,
+      active: true,
+    },
+    {
+      code: 'WELCOME15',
+      kind: 'PERCENT',
+      percentOff: 0.15,
+      // Forces the "minimum order" path to be reachable from the UI.
+      minSubtotalUsd: 150,
+      maxRedemptions: null,
+      perCustomerLimit: 1,
+      stackable: false,
+      active: true,
+    },
+    {
+      code: 'FREESHIP',
+      kind: 'FREE_SHIPPING',
+      percentOff: null,
+      minSubtotalUsd: null,
+      maxRedemptions: null,
+      perCustomerLimit: null,
+      stackable: true,
+      active: true,
+    },
+    {
+      code: 'SUMMER2025',
+      kind: 'PERCENT',
+      percentOff: 0.2,
+      // Already ended, so it must be refused as unrecognised.
+      minSubtotalUsd: null,
+      maxRedemptions: null,
+      perCustomerLimit: null,
+      stackable: false,
+      active: true,
+    },
+  ];
+
+  const now = new Date();
+  for (const promo of PROMOS) {
+    const data = {
+      kind: promo.kind,
+      percentOff: promo.percentOff,
+      amountOffUsd: null,
+      minSubtotalUsd: promo.minSubtotalUsd,
+      startsAt: new Date('2026-01-01T00:00:00Z'),
+      endsAt: promo.code === 'SUMMER2025' ? new Date('2025-09-01T00:00:00Z') : null,
+      maxRedemptions: promo.maxRedemptions,
+      perCustomerLimit: promo.perCustomerLimit,
+      stackable: promo.stackable,
+      appliesToCategories: null,
+      active: promo.active,
+    };
+    await prisma.promoCode.upsert({
+      where: { code: promo.code },
+      create: { code: promo.code, ...data },
+      update: data,
+    });
+    console.log("promo: " + promo.code);
+  }
   console.log('seed complete');
 }
 

@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx --test src/lib/business-logic.test.ts src/lib/avatar-models.test.ts src/lib/avatar-metrics.test.ts",
+    "test": "tsx --test src/lib/business-logic.test.ts src/lib/avatar-models.test.ts src/lib/avatar-metrics.test.ts src/lib/promos.test.ts src/lib/reviews.test.ts",
     "typecheck": "tsc --noEmit",
     "db:push": "prisma db push",
     "db:generate": "prisma generate",

@@ -385,7 +385,7 @@ in two places that share one outcome function (`src/lib/outbox.ts`), so they
 cannot drift:
 
 - `drainOutbox(orderId)` — immediately after the payment commits
-- `processOutboxBatch()` — `GET /api/cron/process-outbox`, every 5 minutes
+- `processOutboxBatch()` — `GET /api/cron/process-outbox`, daily at 00:00 UTC
   (`vercel.json`)
 
 ```
@@ -406,8 +406,19 @@ Four decisions worth knowing:
   job queue silently dies — one crash strands paid orders forever.
 - **Backoff doubles from 1 minute and is capped at 1 hour.** Uncapped doubling is
   arithmetically correct and commercially useless here: an order alert scheduled
-  for 3am reaches a karigah who has stopped looking at WhatsApp for the day. The
-  whole 5-attempt budget spans ~15 minutes.
+  for 3am reaches a karigah who has stopped looking at WhatsApp for the day.
+- **The retry schedule is daily, so the backoff ladder is only ever stepped once
+  per day.** Vercel Hobby refuses a cron more frequent than daily, so a failed
+  send waits for the next 00:00 UTC rather than the next 5-minute slot: the full
+  5-attempt budget spans about 5 days instead of ~15 minutes. This is the one
+  place the plan costs us responsiveness, and it is bounded by the fact that
+  **first delivery is not on the cron at all** — `drainOutbox()` sends inside the
+  payment flow, so only *retries* wait for the nightly pass. A workshop being
+  told about a new order is unaffected; a workshop that missed the first attempt
+  hears about it the next day.
+- **Upgrading to Pro restores a 5-minute cadence** and with it the ~15-minute
+  retry budget, by changing one line in `vercel.json`. Nothing else needs to move:
+  the backoff and claim logic are already tuned for a 5-minute worker.
 - **`FAILED` is not a resting state.** Rows end up `SENT` or `DEAD`, so "dead"
   and "retryable" are never confused. `DEAD` counts are logged loudly — a
   growing pile means paid orders whose workshops were never told.

@@ -2,13 +2,13 @@
  * Standalone outbox worker — the VPS/docker counterpart to the Vercel cron
  * route (`src/app/api/cron/process-outbox/route.ts`).
  *
- * Why two callers for one queue: Vercel Cron issues an HTTP GET every 5
- * minutes, which is the only scheduler on that platform. Anywhere a
- * long-lived process can run (VPS, docker, `npm run worker`), this loop is
- * cheaper and tighter than self-pinging an HTTP endpoint — no auth header to
- * leak, no cold start, and the interval is seconds rather than minutes, so a
- * paid order reaches its workshop while the karigah is still looking at
- * WhatsApp.
+ * Why two callers for one queue: Vercel Cron is the only scheduler on that
+ * platform, and on the Hobby plan it runs no more than once a day — so it is
+ * the safety net for retries, not the primary path. Anywhere a long-lived
+ * process can run (VPS, docker, `npm run worker`), this loop is cheaper and
+ * tighter than self-pinging an HTTP endpoint: no auth header to leak, no cold
+ * start, and the interval is seconds rather than a day, so a paid order reaches
+ * its workshop while the karigah is still looking at WhatsApp.
  *
  * Both callers route through processOutboxBatch(). That is the point: the
  * claim (conditional PENDING->PROCESSING update), the Twilio dispatch, the

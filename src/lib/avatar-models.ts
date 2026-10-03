@@ -123,3 +123,69 @@ export function hairModelUrl(
 export function wearsHairpiece(styleId: string | null | undefined): boolean {
   return hairModelUrl(styleId) !== null;
 }
+
+// ---------------------------------------------------------------------------
+// Resolving a spec from a URL
+// ---------------------------------------------------------------------------
+
+/**
+ * The file name a URL points at, or null when there isn't one.
+ *
+ * Strips query strings and fragments, because a CDN URL is routinely served as
+ * `.../female_base.glb?v=3` and that must still identify the same asset.
+ */
+export function assetFilename(url: string): string | null {
+  if (!url) return null;
+
+  // Drop any #fragment and ?query first: a CDN asset is routinely served as
+  // ".../female_base.glb?v=3", and that must still identify the same asset.
+  const path = (url.split("#")[0] ?? "").split("?")[0] ?? "";
+  const segments = path.split("/").filter(Boolean);
+  const last = segments[segments.length - 1];
+  if (!last) return null;
+
+  // A bare origin ("https://cdn.test") ends in a HOSTNAME, not a file, and
+  // there is no asset to name. Requiring a known model extension keeps the
+  // host from being mistaken for one.
+  return /\.(glb|gltf)$/i.test(last) ? last : null;
+}
+
+/**
+ * Find the measured spec for a model URL, matching on the FILE NAME.
+ *
+ * Why filename rather than the full URL: the measured constants (unit height,
+ * scene offset, skull anchor) describe an ASSET, not where it happens to be
+ * served from. Matching the whole URL meant that moving the files to a CDN —
+ * the obvious thing to do for binaries, and what .gitignore forces — silently
+ * fell through to the "unknown model" default of height 1.7 with a zero offset.
+ * That renders an avatar at the wrong scale, off-centre at the feet, with hair
+ * anchored to a head that is not where the skull actually is. A CDN move would
+ * have looked like a rendering bug, not a lookup miss.
+ *
+ * Falls back to the gender's own base only when the file is genuinely
+ * unrecognised, and says so in the returned spec's url.
+ */
+export function resolveModelSpec(
+  modelUrl: string,
+  gender: Gender,
+): AvatarModelSpec {
+  const file = assetFilename(modelUrl);
+
+  if (file) {
+    const byFile = (Object.values(AVATAR_MODELS) as AvatarModelSpec[]).find(
+      (m) => assetFilename(m.url) === file,
+    );
+    // Exact URL match still wins, so a deliberate override of a bundled URL is
+    // never second-guessed by a same-named file elsewhere.
+    if (byFile && byFile.url === modelUrl) return byFile;
+    if (byFile) return { ...byFile, url: modelUrl };
+  }
+
+  return {
+    ...avatarModelFor(gender),
+    url: modelUrl,
+    // Unknown asset: assume metres, which is what the GLB pipeline documents.
+    height: 1.7,
+    offset: [0, 0, 0],
+  };
+}

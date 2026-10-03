@@ -49,6 +49,7 @@ import {
   avatarModelFor,
   defaultAvatarModelUrl,
   hairModelUrl,
+  resolveModelSpec,
   type AvatarModelSpec,
 } from "@/lib/avatar-models";
 
@@ -145,24 +146,19 @@ type LoadedProps = Omit<AvatarAssetProps, "modelUrl"> & {
 };
 
 /**
- * Measured constants for a bundled base. An unregistered third-party URL
- * borrows the gender base's anchor and assumes metres — approximate by
- * necessity. Measure and register the model (avatar-models.ts) if it matters.
+ * Measured constants for whatever model is actually loaded.
+ *
+ * Delegates to resolveModelSpec, which matches on the FILE NAME so the assets
+ * keep their measured height, offset and skull anchor even when they are served
+ * from a CDN rather than bundled. A third-party model that is not one of ours
+ * falls back to metres and a zero offset - approximate by necessity, so
+ * measure and register it in avatar-models.ts if it matters.
  */
 function specFor(
   modelUrl: string,
   gender: BodyParams["gender"],
 ): AvatarModelSpec {
-  return (
-    (Object.values(AVATAR_MODELS) as AvatarModelSpec[]).find(
-      (m) => m.url === modelUrl,
-    ) ?? {
-      ...avatarModelFor(gender),
-      url: modelUrl,
-      height: 1.7,
-      offset: [0, 0, 0],
-    }
-  );
+  return resolveModelSpec(modelUrl, gender);
 }
 
 function cloneMaterials(root: THREE.Object3D) {
